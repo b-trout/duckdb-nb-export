@@ -1,5 +1,5 @@
 {
-  "name": "duckdb-ui-notebook-export",
+  "name": "duckdb-nb-export",
   "build": {
     "context": "..",
     "dockerfile": "../Dockerfile"

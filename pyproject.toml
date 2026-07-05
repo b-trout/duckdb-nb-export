@@ -1,12 +1,45 @@
 [project]
-name = "duckdb-ui-notebook-export"
+name = "duckdb-nb-export"
 version = "0.1.0"
-description = "Add your description here"
+description = "Export DuckDB UI notebooks to standalone static HTML, re-executing cells against the target database."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "duckdb",
+    "duckdb-ui",
+    "html-export",
+    "notebook",
+    "static-html",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Typing :: Typed",
+]
 dependencies = [
     "duckdb>=1.5.4",
+    "jinja2>=3",
+    "pydantic>=2",
+    "pygments>=2",
+    "structlog>=24",
 ]
+
+[project.scripts]
+duckdb-nb-export = "duckdb_ui_notebook_export.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.ruff.lint]
 select = [
@@ -24,6 +57,17 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "assumptions: permanent tests guarding design assumptions (DuckDB behavior / DuckDB UI unofficial schema)",
+    "integration: multi-layer tests using real files and processes",
+    "e2e: golden HTML tests driving the real CLI",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/duckdb_ui_notebook_export"]
 
 [tool.poe.tasks]
 format = "pre-commit run ruff-format --all-files"
@@ -44,7 +88,6 @@ dev = [
     "pip-audit>=2.10.1",
     "poethepoet>=0.47.1",
     "pre-commit>=4.6.0",
-    "pydantic>=2.13.4",
     "pytest>=9.1.1",
     "ruff>=0.15.20",
     "ty>=0.0.56",
