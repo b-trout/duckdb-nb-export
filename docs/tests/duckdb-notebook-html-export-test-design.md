@@ -1,10 +1,11 @@
 # テスト設計書: DuckDB UI Notebook → HTML Export ツール
 
-- ステータス: テストスイート実装済み(106 passed / 5 skipped)
+- ステータス: テストスイート実装済み(110 passed / 5 skipped)
 - 作成日: 2026-07-05
 - 改訂: 2026-07-05(notebook JSONスキーマ実機調査(design doc 6.2#1/#3)完了を反映。2.1節・2.2節のブロック状況、8.2節のブロック理由、6.2節AT-010の内容を更新。新たな設計判断はなし)
 - 改訂: 2026-07-05(整合性レビュー反映。実装済みテストスイートとの不整合を解消。新たな設計判断はなし)
 - 改訂: 2026-07-05(第7回改訂 — `--notebook-id` オプション追加とui.db不在エラー改善に伴い、UT-R-014・UT-R-015・UT-C-023を追加。design doc 4.1節/7章の第7回改訂と対応)
+- 改訂: 2026-07-05(第8回改訂 — 実ブラウザセッション由来fixtureの取り込みにより、`notebooks.name` が内部スラッグで表示名は `notebook_versions.title` にあるという前提の誤りが判明。UT-R-016〜019を追加し、Reader層の名前解決を表示名照合→内部スラッグフォールバックの2段階に修正(design doc 4.1節・6.3#9の第12回改訂と対応)。2.1節のフィクスチャ出自記述を更新し、UT-R-006/007の「notebook名」を「表示名」に明確化)
 - 対象範囲: **Phase 1(MVP: CLIエクスポート)のみ**。Phase 1.5(マジックコマンド)・Phase 2(チャート埋め込み・C++コア移植)のテストは本書のスコープ外とする(関連ドキュメントのフェーズ分けは design doc 2.1節を参照)。
 - 関連ドキュメント:
   - Design Doc: `docs/design/duckdb-notebook-html-export-design.md`
@@ -75,11 +76,11 @@
 
 ### 2.1 ui.db フィクスチャ(実UI由来・バイナリ)
 
-- 実際のDuckDB UI(`duckdb --ui`)で作成した `ui.db`(と、存在する場合は `ui.db.wal`)を `tests/fixtures/ui_db/` 配下にバイナリのまま保持する。現在のフィクスチャはwalなしである。
+- 実際のDuckDB UI(`duckdb --ui`)で作成した `ui.db`(と、存在する場合は `ui.db.wal`)を `tests/fixtures/ui_db/` 配下にバイナリのまま保持する。
 - 目的は非公式スキーマ(`notebooks` / `notebook_versions`)の変化をCIで機械的に検知することである(design doc 8章「ui.dbスキーマのフィクスチャテスト」)。検知は前提検証テスト AT-009(テーブル・カラム構造)および AT-010(notebook JSONのPydanticパース)としてID付きテストケース化する(6章)。
 - notebook JSONスキーマ実機調査(design doc 6.2#1/#3)完了により、ui.dbの正確なDDL・notebook保存形式v3の構造が確定した(design doc 6.3#9)。これにより実UIフィクスチャの生成手順(下記スクリプト化)・内容検証(AT-009/AT-010)を、推測ではなく確定済みスキーマに基づいて実装できるようになった。
 - **再生成手順のスクリプト化**: フィクスチャは手作業では再現性がないため、`scripts/regenerate_ui_db_fixtures.py`(実装済み)で再生成する。スクリプトはUIサーバーを起動し、ブラウザでの実UI操作を促した上で、ブラウザが使えない環境では確定済みスキーマ(design doc 6.3#9)に基づくフォールバック構築を行う。手動実行(CI上で `duckdb --ui` を自動操作するのは非現実的なため)を前提とし、DuckDBバージョンアップ時やスキーマ変化検知時に開発者が明示的に再生成する運用とする。
-- **現在のフィクスチャの出自(2026-07-05)**: 初回生成はブラウザが利用できない環境だったため、**フォールバック(実UIフロントエンドと同一のDDL・JSON v3形式によるSQL直接構築)で生成**されている。実ブラウザ操作由来ではない点に留意(スキーマ・形式はバンドル抽出のDDL/バリデータに厳密準拠しており、AT-009/010の検知目的には十分)。ブラウザが使える環境で再生成した際はこの注記を更新すること。
+- **現在のフィクスチャの出自(2026-07-05更新)**: **実ブラウザセッション由来で再生成済み**(`scripts/regenerate_ui_db_fixtures.py` のbrowserモード)。`ui.db.wal` サイドカー付き。初回生成はブラウザが利用できない環境だったためフォールバック構築だったが、その後ブラウザ操作を伴う実UIセッションで作り直し、`ui.db` と `ui.db.wal` の両方をチェックインしている(旧「フィクスチャはwalなし」という記述は誤りとなったため訂正)。この再生成により、`notebooks.name` は内部スラッグ(例 `notebook_OR_g9u20SBN9`)であり表示名ではない、という前提の誤りが判明した(design doc 6.3#9追記・4.1節参照)。表示名は最新バージョン(`expires IS NULL`)の `notebook_versions.title` に入る(実フィクスチャでは2notebookとも `Untitled Notebook` で、同名衝突ケースを兼ねる)。
 - フィクスチャは最小限のケース(1notebook・複数バージョン・複数セル・同名notebook衝突用の2件)を用意する。
 
 ### 2.2 合成 ui.db フィクスチャ(生成ヘルパー)
@@ -123,8 +124,8 @@
 | UT-R-003 | コピー後の読み取り検証が成功する場合、リトライなしで即座に成功すること | design doc 4.1節, ADR-002 |
 | UT-R-004 | コピー直後の読み取り検証が失敗する場合、既定0.5秒間隔で既定3回までリトライされること | design doc 4.1節, ADR-002 |
 | UT-R-005 | 3回のリトライを尽くしても読み取りに失敗する場合、「UIが起動中のため読み取りに失敗した。`--require-ui-closed` で再試行するか、少し時間をおいて再実行してください」という趣旨の明確なエラーメッセージを返すこと | design doc 4.1節, ADR-002 |
-| UT-R-006 | 指定したnotebook名が存在しない場合、存在するnotebook名一覧を添えたエラーを返すこと | design doc 4.1節 |
-| UT-R-007 | 同名notebookが複数存在する場合、曖昧さを解決せず、候補(名前・内部ID・更新日時)を一覧表示してエラーとすること | design doc 4.1節 |
+| UT-R-006 | 指定した表示名(notebook名)が存在しない場合、存在する表示名一覧を添えたエラーを返すこと | design doc 4.1節 |
+| UT-R-007 | 同一表示名のnotebookが複数存在する場合、曖昧さを解決せず、候補(表示名・内部ID・更新日時)を一覧表示してエラーとすること | design doc 4.1節 |
 | UT-R-008 | `--nb-version` 未指定時は既定で最新バージョンが選択されること | design doc 4.1節 |
 | UT-R-009 | `--nb-version <id>` 指定時は指定したバージョンIDのnotebook定義が取得されること | design doc 4.1節 |
 | UT-R-010 | notebook JSONに未知のフィールドが含まれていても、Pydanticモデルのパースが失敗しないこと(将来のスキーマ変更耐性) | design doc 4.1節 |
@@ -133,6 +134,10 @@
 | UT-R-013 | ツールの `duckdb` パッケージより新しいstorage versionで作成されたui.dbを開こうとした場合、「ツール側のduckdbパッケージ更新」を促す趣旨の明確なエラーメッセージ(英語)が返ること(CLIとしては終了コード4 — UT-C-018と相互参照。フィクスチャは2.4節。実行環境のduckdbが十分新しい場合はskip) | design doc 6.2#10, 8章, 7章, ADR-001 |
 | UT-R-014 | `notebook_id` を指定した場合、同名notebookが複数存在していても曖昧エラーにならず、指定IDのnotebookが一意に解決されること(同名衝突の脱出路) | design doc 4.1節, 7章(第7回改訂) |
 | UT-R-015 | `ui.db` ファイル自体が存在しない場合、「見つからない」旨の明確なエラーになり、「UIが起動中かもしれない」という誤誘導メッセージにならないこと | design doc 4.1節, 7章(第7回改訂) |
+| UT-R-016 | 実ブラウザセッション由来fixture(`tests/fixtures/ui_db/ui.db`)に対し、`list_notebooks` が `notebooks.name`(内部スラッグ)ではなく表示名(最新版の `notebook_versions.title`)を返すこと | design doc 4.1節, 6.3#9(第12回改訂) |
+| UT-R-017 | 同fixtureで、2notebookが共有する表示名 `"Untitled Notebook"` を指定して `load_notebook` を呼ぶと `AmbiguousNotebookError`(`--notebook-id` への誘導を含む)になること | design doc 4.1節, 7章 |
+| UT-R-018 | 同fixtureで、`notebook_id` 指定により表示名衝突があっても一意に解決でき、最新版(3セル、うち1つは `query IS NULL` の空セル)が読めること | design doc 4.1節, 6.3#9, 7章 |
+| UT-R-019 | 同fixtureで、内部スラッグ(`notebooks.name`、例 `notebook_JKS7o1wU06Fs`)をnotebook名として渡した場合も、表示名照合が0件のときのフォールバックにより一意に解決できること | design doc 4.1節, 6.3#9 |
 
 ### 3.2 Executor層
 

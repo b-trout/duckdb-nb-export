@@ -560,3 +560,137 @@ def test_ut_r_015_missing_ui_db_reports_clear_not_found_error(
     assert str(missing_ui_db) in message
     assert "not found" in message.lower()
     assert "running" not in message.lower()
+
+
+# Real-browser-derived fixture: tests/fixtures/ui_db/ui.db was regenerated
+# from an actual DuckDB UI browser session (scripts/regenerate_ui_db_fixtures.py
+# browser mode). Diffing it against the fallback build revealed that
+# notebooks.name holds an internal slug (e.g. "notebook_OR_g9u20SBN9"), while
+# the name shown to users in the UI lives in notebook_versions.title (e.g.
+# "Untitled Notebook", read from the latest version where expires IS NULL).
+# UT-R-016..019 pin the corrected resolution semantics against that fixture.
+_REAL_UI_DB_FIXTURE = Path(__file__).parent / "fixtures" / "ui_db" / "ui.db"
+_REAL_NOTEBOOK_A_ID = "902baeaf-241e-437e-9564-ec03c316b3f0"
+_REAL_NOTEBOOK_A_SLUG = "notebook_OR_g9u20SBN9"
+_REAL_NOTEBOOK_B_SLUG = "notebook_JKS7o1wU06Fs"
+_REAL_DISPLAY_TITLE = "Untitled Notebook"
+
+
+def _real_ui_db_fixture() -> Path:
+    """Return the real browser-derived ui.db fixture, skipping if absent.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to ``tests/fixtures/ui_db/ui.db``.
+    """
+    if not _REAL_UI_DB_FIXTURE.exists():
+        pytest.skip("real ui.db fixture not present")
+    return _REAL_UI_DB_FIXTURE
+
+
+def test_ut_r_016_list_notebooks_reports_display_title_not_slug() -> None:
+    """UT-R-016: list_notebooks reports the display title, not the slug.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` returns the notebook
+        display name (the latest version's ``title``) for both notebooks in
+        the real fixture, rather than the internal ``notebooks.name`` slug.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9 (real-browser-fixture
+    finding). Both notebooks in the real fixture happen to share the same
+    display title ("Untitled Notebook"), which is itself the same-name
+    collision case covered by UT-R-007/UT-R-014.
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    notebooks = list_notebooks(ui_db_path)
+
+    names = [notebook.name for notebook in notebooks]
+    assert names == [_REAL_DISPLAY_TITLE, _REAL_DISPLAY_TITLE]
+    assert _REAL_NOTEBOOK_A_SLUG not in names
+    assert _REAL_NOTEBOOK_B_SLUG not in names
+
+
+def test_ut_r_017_load_by_display_title_is_ambiguous_for_real_fixture() -> None:
+    """UT-R-017: loading by the shared display title raises ambiguity.
+
+    Returns
+    -------
+    None
+        The test asserts that resolving by the display title
+        ``"Untitled Notebook"`` raises ``AmbiguousNotebookError`` because
+        both real-fixture notebooks share that title, and that the error
+        points at ``--notebook-id``.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 7 section.
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    with pytest.raises(AmbiguousNotebookError) as error_info:
+        load_notebook(ui_db_path, _REAL_DISPLAY_TITLE)
+
+    message = str(error_info.value)
+    assert "--notebook-id" in message
+
+
+def test_ut_r_018_load_by_notebook_id_reads_latest_three_cell_version() -> None:
+    """UT-R-018: notebook_id resolves the real fixture's latest version.
+
+    Returns
+    -------
+    None
+        The test asserts that loading by ``notebook_id`` succeeds despite the
+        display-title collision, and that the latest version (``expires IS
+        NULL``) is returned with its three cells, including the empty
+        (``query IS NULL``) trailing cell.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9 (real-browser-fixture
+    finding), 7 section.
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    notebook = load_notebook(
+        ui_db_path,
+        _REAL_DISPLAY_TITLE,
+        notebook_id=_REAL_NOTEBOOK_A_ID,
+    )
+
+    assert notebook.name == _REAL_DISPLAY_TITLE
+    assert [cell.sql for cell in notebook.cells] == [
+        "select 1 as one, 2 as two;",
+        "select current_database() as db_name;",
+        "",
+    ]
+
+
+def test_ut_r_019_load_by_internal_slug_falls_back_when_title_ambiguous() -> None:
+    """UT-R-019: an internal slug still resolves via the fallback match.
+
+    Returns
+    -------
+    None
+        The test asserts that passing the internal ``notebooks.name`` slug
+        (as a user might if they copied it from an older tool version or
+        from the raw database) as the notebook name still resolves
+        unambiguously, because slug matching is only consulted when title
+        matching finds zero candidates.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9 (real-browser-fixture
+    finding).
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    notebook = load_notebook(ui_db_path, _REAL_NOTEBOOK_B_SLUG)
+
+    assert notebook.name == _REAL_DISPLAY_TITLE
