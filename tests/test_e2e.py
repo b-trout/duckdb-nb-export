@@ -313,12 +313,12 @@ def test_e2e_001_successful_cells_match_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
-    The fixture skip remains until both synthetic ui.db and golden HTML assets
-    are available.
+    None.
     """
     synthetic_ui_db = _build_synthetic_ui_db(
         tmp_path,
@@ -350,7 +350,8 @@ def test_e2e_002_non_abort_error_matches_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
@@ -391,7 +392,8 @@ def test_e2e_003_abort_error_skips_later_cells_and_matches_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
@@ -435,7 +437,8 @@ def test_e2e_004_large_result_limit_matches_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
@@ -472,7 +475,8 @@ def test_e2e_005_nested_and_null_values_match_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
@@ -518,7 +522,9 @@ def test_e2e_006_chart_cell_fallback_matches_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised by the synthetic ui.db builder because stored notebook format
+        v3 has no representation for ``chart`` cells; this is the one
+        scenario in this module that is expected to skip.
 
     Notes
     -----
@@ -559,7 +565,8 @@ def test_e2e_007_create_secret_masking_matches_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
@@ -604,7 +611,8 @@ def test_e2e_008_transaction_statement_cells_match_golden_html(
     Raises
     ------
     pytest.skip.Exception
-        Raised while synthetic UI database generation is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----

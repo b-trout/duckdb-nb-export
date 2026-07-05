@@ -138,6 +138,9 @@ Existing output files are not overwritten; a numeric suffix is added.
 - Long scalar values are truncated after 500 characters in HTML output.
 - The reader depends on DuckDB UI's unofficial schema and stored notebook
   format v3.
+- Notebook JSON's `currentDatabase` / `useDatabase` (database name) is not
+  applied on re-execution yet; environment replay is not yet implemented, so
+  pass `--db <path>` to point at the right database.
 
 ### License
 

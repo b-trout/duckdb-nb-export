@@ -169,7 +169,11 @@ def resolve_target_db(notebook: Notebook, cli_db: str | None) -> tuple[str, bool
     Notes
     -----
     Resolution priority is ``--db``, notebook JSON, then ``:memory:`` per
-    ADR-008.
+    ADR-008. Stored format v3 keeps only a database name, not a file path, so
+    the ``database_info["path"]`` branch below targets a future format
+    extension or programmatic use (direct ``Notebook`` construction) rather
+    than the current reader path; going through the reader currently always
+    falls back to ``:memory:`` unless ``--db`` is supplied.
     """
     if cli_db is not None:
         return cli_db, False

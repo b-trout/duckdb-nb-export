@@ -269,8 +269,9 @@ def test_it_001_snapshot_reader_succeeds_while_rw_process_holds_ui_db(
 
     Notes
     -----
-    The synthetic UI database fixture skips this test until design doc 6.2#1 is
-    resolved.
+    The synthetic UI database fixture and ``locked_ui_db`` process fixture are
+    implemented and exercise the snapshot reader against a real RW-locked
+    ui.db.
     """
     notebook = load_notebook(locked_ui_db, "integration-notebook")
 
@@ -299,8 +300,8 @@ def test_it_002_direct_reader_fails_while_rw_process_holds_ui_db(
 
     Notes
     -----
-    This is the direct-access control case for IT-001 and is skipped until the
-    synthetic UI schema helper is implemented.
+    This is the direct-access control case for IT-001, exercised against the
+    same real RW-locked synthetic ui.db.
     """
     with pytest.raises(Exception, match=r"lock|access|busy|closed"):
         open_ui_db(locked_ui_db, require_ui_closed=True)
@@ -633,7 +634,8 @@ def test_it_010_require_ui_closed_fails_when_rw_process_holds_ui_db(
     Raises
     ------
     pytest.skip.Exception
-        Raised while the synthetic UI database helper is blocked.
+        Raised only if the synthetic ui.db builder cannot encode a requested
+        cell type; this scenario uses plain SQL cells and runs normally.
 
     Notes
     -----
