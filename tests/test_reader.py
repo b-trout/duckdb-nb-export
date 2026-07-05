@@ -78,7 +78,7 @@ def _assert_marker_table_readable(ui_db_path: Path) -> None:
 
 @pytest.fixture
 def synthetic_ui_db(tmp_path: Path) -> Path:
-    """Build a synthetic ui.db, skipping while blocked by design doc 6.2#1.
+    """Build a synthetic ui.db, skipping with the builder's unsupported reason.
 
     Parameters
     ----------
@@ -138,8 +138,8 @@ def synthetic_ui_db(tmp_path: Path) -> Path:
             ],
             tmp_path,
         )
-    except NotImplementedError:
-        pytest.skip("blocked by design doc 6.2#1: notebook JSON schema unknown")
+    except NotImplementedError as error:
+        pytest.skip(str(error))
 
 
 def test_ut_r_001_wal_copied_together(tmp_path: Path) -> None:

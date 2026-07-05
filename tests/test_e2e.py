@@ -18,7 +18,7 @@ None
 Notes
 -----
 The golden fixtures and synthetic UI database builder are intentionally wired
-now, while test execution is skipped until the UI notebook schema is known.
+now, with unsupported stored-format scenarios skipped by the builder.
 """
 
 from __future__ import annotations
@@ -63,12 +63,12 @@ def _build_synthetic_ui_db(
     Raises
     ------
     pytest.skip.Exception
-        Raised by pytest when the helper is still blocked by schema discovery.
+        Raised by pytest when the builder cannot encode a requested cell type.
 
     Notes
     -----
     Each E2E test passes the exact notebook cells needed for its scenario while
-    execution remains blocked by the missing DuckDB UI notebook JSON schema.
+    relying on the builder to skip unsupported stored-format v3 cell types.
     """
     from tests.helpers.synthetic_ui_db import build_ui_db
 
@@ -89,8 +89,8 @@ def _build_synthetic_ui_db(
 
     try:
         return build_ui_db(notebooks, tmp_path)
-    except NotImplementedError:
-        pytest.skip("blocked by design doc 6.2#1: notebook JSON schema unknown")
+    except NotImplementedError as error:
+        pytest.skip(str(error))
 
 
 def normalize_golden_html(html: str) -> str:

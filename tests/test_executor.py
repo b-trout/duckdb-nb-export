@@ -466,13 +466,17 @@ def test_ut_x_021_notebook_connection_environment_is_replayed_before_execution(
 
     Notes
     -----
-    Blocked by design doc 6.2#1 because the DuckDB UI notebook JSON schema is
-    unknown. Once unblocked, this should verify that ATTACH statements,
-    extension loading, secrets, and variables from notebook JSON are reproduced
-    as far as possible before executing cells.
+    Environment reproduction semantics depend on Reader implementation because
+    stored format v3 provides database names only. Once unblocked, this should
+    verify that ATTACH statements, extension loading, secrets, and variables
+    from notebook data are reproduced as far as possible before executing
+    cells.
 
     Traceability
     ------------
     design doc 4.2, ADR-008
     """
-    pytest.skip("blocked by design doc 6.2#1: notebook JSON schema unknown")
+    pytest.skip(
+        "environment reproduction semantics depend on Reader implementation; "
+        "stored format v3 provides database names only (design doc 6.3#9, ADR-008)"
+    )

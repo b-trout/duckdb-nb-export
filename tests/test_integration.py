@@ -43,7 +43,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def synthetic_ui_db(tmp_path: Path) -> Path:
-    """Build a synthetic ui.db, skipping while blocked by design doc 6.2#1.
+    """Build a synthetic ui.db, skipping with the builder's unsupported reason.
 
     Parameters
     ----------
@@ -58,7 +58,7 @@ def synthetic_ui_db(tmp_path: Path) -> Path:
     Raises
     ------
     pytest.skip.Exception
-        Raised by pytest when the helper is still blocked by schema discovery.
+        Raised by pytest when the builder cannot encode a requested cell type.
 
     Notes
     -----
@@ -84,8 +84,8 @@ def synthetic_ui_db(tmp_path: Path) -> Path:
             ],
             tmp_path,
         )
-    except NotImplementedError:
-        pytest.skip("blocked by design doc 6.2#1: notebook JSON schema unknown")
+    except NotImplementedError as error:
+        pytest.skip(str(error))
 
 
 @pytest.fixture
@@ -556,12 +556,12 @@ def test_it_009_cli_requires_prompt_for_copy_to_side_effect(
     Raises
     ------
     pytest.skip.Exception
-        Raised while the synthetic UI database helper is blocked.
+        Raised if the synthetic UI database helper cannot encode test data.
 
     Notes
     -----
-    The fixture skip preserves the test body until the notebook JSON schema is
-    available.
+    The skip reason comes from the synthetic database builder when a requested
+    cell type is not represented in stored format v3.
     """
     from tests.helpers.synthetic_ui_db import build_ui_db
 
@@ -586,8 +586,8 @@ def test_it_009_cli_requires_prompt_for_copy_to_side_effect(
             ],
             tmp_path,
         )
-    except NotImplementedError:
-        pytest.skip("blocked by design doc 6.2#1: notebook JSON schema unknown")
+    except NotImplementedError as error:
+        pytest.skip(str(error))
 
     output_path = tmp_path / "copy.html"
     result = subprocess.run(  # noqa: S603
