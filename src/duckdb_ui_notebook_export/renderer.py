@@ -318,7 +318,8 @@ def render_html(
     Returns
     -------
     str
-        Complete HTML document.
+        Complete HTML document with no trailing whitespace on any line and a
+        single trailing newline.
 
     Raises
     ------
@@ -330,13 +331,35 @@ def render_html(
     Jinja2 autoescaping is enabled; only Pygments output is marked safe.
     """
     rendered_cells = list(_iter_rendered_cells(notebook, report))
-    return _HTML_TEMPLATE.render(
+    html_document = _HTML_TEMPLATE.render(
         notebook=notebook,
         cells=rendered_cells,
         metadata=metadata,
         css=_BASE_CSS,
         pygments_css=_PYGMENTS_CSS,
     )
+    return _normalize_rendered_html(html_document)
+
+
+def _normalize_rendered_html(html_document: str) -> str:
+    end = len(html_document)
+    while end > 0 and html_document[end - 1].isspace():
+        end -= 1
+
+    return "".join(_iter_normalized_lines(html_document, end)) + "\n"
+
+
+def _iter_normalized_lines(html_document: str, end: int) -> Iterator[str]:
+    start = 0
+    while start < end:
+        newline_index = html_document.find("\n", start, end)
+        if newline_index == -1:
+            yield html_document[start:end].rstrip()
+            return
+
+        yield html_document[start:newline_index].rstrip()
+        yield "\n"
+        start = newline_index + 1
 
 
 def _split_secret_parameters(parameters: str) -> Iterator[str]:

@@ -23,9 +23,11 @@ now, with unsupported stored-format scenarios skipped by the builder.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -122,20 +124,20 @@ def normalize_golden_html(html: str) -> str:
         html,
     )
     normalized = re.sub(
-        r"DuckDB(?:\s+version)?\s*[:=]\s*v?\d+(?:\.\d+)+(?:[-+.\w]*)?",
+        r"DuckDB(?:\s+version)?(?:\s*[:=]\s*|\s+)v?\d+(?:\.\d+)+(?:[-+.\w]*)?",
         "DuckDB version: __DUCKDB_VERSION__",
         normalized,
         flags=re.IGNORECASE,
     )
     normalized = re.sub(
         r"(?:notebook[-_\s]?version(?:[-_\s]?id)?|nb[-_\s]?version[-_\s]?id)"
-        r"\s*[:=]\s*['\"]?[A-Za-z0-9_.:-]+['\"]?",
+        r"(?:\s*[:=]\s*|\s+)['\"]?[A-Za-z0-9_.:-]+['\"]?",
         "notebook version id: __NB_VERSION_ID__",
         normalized,
         flags=re.IGNORECASE,
     )
     normalized = re.sub(
-        r"(?:tool[-_\s]?version|exporter[-_\s]?version)\s*[:=]\s*['\"]?"
+        r"(?:tool[-_\s]?version|exporter[-_\s]?version)(?:\s*[:=]\s*|\s+)['\"]?"
         r"v?\d+(?:\.\d+)+(?:[-+.\w]*)?['\"]?",
         "tool version: __TOOL_VERSION__",
         normalized,
@@ -201,7 +203,7 @@ def _run_cli_export(
 
 
 def _assert_matches_golden(output_path: Path, golden_name: str) -> None:
-    """Compare a generated HTML file with a normalized golden fixture.
+    """Compare or update a normalized golden HTML fixture.
 
     Parameters
     ----------
@@ -225,11 +227,22 @@ def _assert_matches_golden(output_path: Path, golden_name: str) -> None:
     Notes
     -----
     Golden fixtures are expected to store already-normalized placeholders.
+    Set ``UPDATE_GOLDEN_HTML=1`` to write the normalized output to
+    ``tests/golden/<golden_name>`` before comparing it. For example, run
+    ``UPDATE_GOLDEN_HTML=1 uv run pytest tests/test_e2e.py`` to refresh the
+    E2E golden HTML snapshots.
     """
     actual = normalize_golden_html(output_path.read_text(encoding="utf-8"))
-    expected = (Path(__file__).parent / "golden" / golden_name).read_text(
-        encoding="utf-8",
-    )
+    golden_path = Path(__file__).parent / "golden" / golden_name
+    if os.environ.get("UPDATE_GOLDEN_HTML") == "1":
+        golden_path.write_text(actual, encoding="utf-8")
+        warnings.warn(
+            f"Updated golden HTML fixture: {golden_path}",
+            pytest.PytestWarning,
+            stacklevel=2,
+        )
+
+    expected = golden_path.read_text(encoding="utf-8")
 
     assert actual == expected
     assert "<link href=" not in actual
