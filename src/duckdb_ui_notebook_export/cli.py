@@ -378,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "notebook_name",
         nargs="?",
-        help="Notebook name to export. Optional when --list is used.",
+        help="Notebook name to export. Optional when --list or --notebook-id is used.",
     )
     parser.add_argument(
         "-o",
@@ -402,6 +402,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--nb-version",
         help="Notebook version identifier to export.",
+    )
+    parser.add_argument(
+        "--notebook-id",
+        help="Notebook ID to disambiguate notebooks that share the same "
+        "name (see --list). When given, notebook_name may be omitted and "
+        "takes priority over notebook_name for resolution.",
     )
     parser.add_argument(
         "--list",
@@ -452,8 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.list and args.notebook_name is None:
-        parser.error("notebook_name is required unless --list is used.")
+    if not args.list and args.notebook_name is None and args.notebook_id is None:
+        parser.error(
+            "notebook_name is required unless --list or --notebook-id is used."
+        )
 
     try:
         if args.list:
@@ -461,14 +469,21 @@ def main(argv: list[str] | None = None) -> int:
             return int(ExitCode.OK)
 
         if args.list_versions:
-            _write_version_table(list_versions(Path(args.ui_db), args.notebook_name))
+            _write_version_table(
+                list_versions(
+                    Path(args.ui_db),
+                    args.notebook_name,
+                    notebook_id=args.notebook_id,
+                )
+            )
             return int(ExitCode.OK)
 
-        output_path = resolve_output_path(
-            args.output,
-            args.notebook_name,
-            args.output_dir,
-        )
+        if args.notebook_name is not None:
+            output_path = resolve_output_path(
+                args.output,
+                args.notebook_name,
+                args.output_dir,
+            )
     except OutputPathError as error:
         LOGGER.error("output_path_rejected", error=str(error))
         return int(ExitCode.OUTPUT_PATH_REJECTED)
@@ -485,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
             args.notebook_name,
             version_id=args.nb_version,
             require_ui_closed=args.require_ui_closed,
+            notebook_id=args.notebook_id,
         )
     except (NotebookNotFoundError, AmbiguousNotebookError) as error:
         LOGGER.error("notebook_not_found", error=str(error))
@@ -492,6 +508,17 @@ def main(argv: list[str] | None = None) -> int:
     except (StorageVersionMismatchError, UiDbAccessError) as error:
         LOGGER.error("ui_db_access_failed", error=f"ui.db access failed: {error}")
         return int(ExitCode.UI_DB_ACCESS_FAILED)
+
+    if args.notebook_name is None:
+        try:
+            output_path = resolve_output_path(
+                args.output,
+                notebook.name,
+                args.output_dir,
+            )
+        except OutputPathError as error:
+            LOGGER.error("output_path_rejected", error=str(error))
+            return int(ExitCode.OUTPUT_PATH_REJECTED)
 
     try:
         if not confirm_execution(notebook.cells, assume_yes=args.yes):

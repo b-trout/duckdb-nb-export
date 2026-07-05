@@ -89,6 +89,29 @@ def _map_duckdb_open_error(error: Exception, ui_db_path: Path) -> UiDbAccessErro
     return UiDbAccessError(f"Cannot open DuckDB UI database at {ui_db_path}: {message}")
 
 
+def _require_ui_db_exists(ui_db_path: Path) -> None:
+    """Raise a clear error when the source ``ui.db`` file is missing.
+
+    Parameters
+    ----------
+    ui_db_path
+        Path to the source ``ui.db`` file.
+
+    Raises
+    ------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError
+        Raised when ``ui_db_path`` does not exist. Unlike corrupt-file or
+        lock-conflict failures, this case is not retried and must not suggest
+        that the UI might be running, since a missing file means the UI has
+        likely never been started (or was started with a different path).
+    """
+    if not ui_db_path.exists():
+        raise UiDbAccessError(
+            f"ui.db not found at {ui_db_path}. Pass --ui-db or start DuckDB UI "
+            "once to create it."
+        )
+
+
 def _connect_read_only(ui_db_path: Path) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB database in read-only mode with reader error mapping."""
     try:
@@ -137,6 +160,17 @@ def _raise_not_found(name: str, available_names: list[str]) -> None:
     raise error
 
 
+def _raise_not_found_by_id(notebook_id: str, available_ids: list[str]) -> None:
+    """Raise a not-found error with available notebook IDs attached."""
+    formatted = ", ".join(available_ids) if available_ids else "(none)"
+    error = NotebookNotFoundError(
+        f"Notebook with notebook_id {notebook_id!r} was not found. "
+        f"Available notebook IDs: {formatted}."
+    )
+    error.available_names = available_ids
+    raise error
+
+
 def _raise_ambiguous(name: str, candidates: list[NotebookInfo]) -> None:
     """Raise an ambiguity error with matching notebook candidates attached."""
     candidate_text = "; ".join(
@@ -145,7 +179,8 @@ def _raise_ambiguous(name: str, candidates: list[NotebookInfo]) -> None:
         for candidate in candidates
     )
     error = AmbiguousNotebookError(
-        f"Notebook name {name!r} is ambiguous. Candidates: {candidate_text}."
+        f"Notebook name {name!r} is ambiguous. Candidates: {candidate_text}. "
+        "Use --notebook-id <id> (see --list) to disambiguate."
     )
     error.candidates = candidates
     raise error
@@ -170,15 +205,46 @@ def _display_notebook_id(candidate: NotebookInfo) -> str:
 def _resolve_notebook(
     connection: duckdb.DuckDBPyConnection,
     name: str,
+    *,
+    notebook_id: str | None = None,
 ) -> NotebookInfo:
-    """Resolve a notebook name to exactly one notebook metadata record."""
-    candidates = [
-        notebook for notebook in _list_notebooks(connection) if notebook.name == name
-    ]
+    """Resolve a notebook name (or ID) to exactly one notebook metadata record.
+
+    Parameters
+    ----------
+    connection
+        Open DuckDB connection to the UI database or its snapshot.
+    name
+        Notebook name to resolve. Ignored when ``notebook_id`` is provided
+        and does not match, since ``notebook_id`` always takes priority.
+    notebook_id
+        Optional notebook identifier used to resolve unambiguously,
+        bypassing name-based matching entirely.
+
+    Returns
+    -------
+    NotebookInfo
+        The resolved notebook metadata record.
+
+    Raises
+    ------
+    duckdb_ui_notebook_export.exceptions.NotebookNotFoundError
+        Raised when no notebook matches the given name or ID.
+    duckdb_ui_notebook_export.exceptions.AmbiguousNotebookError
+        Raised when the notebook name resolves to multiple notebooks and no
+        ``notebook_id`` was given to disambiguate.
+    """
+    all_notebooks = _list_notebooks(connection)
+    if notebook_id is not None:
+        for notebook in all_notebooks:
+            if notebook.notebook_id == notebook_id:
+                return notebook
+        available_ids = sorted({notebook.notebook_id for notebook in all_notebooks})
+        _raise_not_found_by_id(notebook_id, available_ids)
+
+    candidates = [notebook for notebook in all_notebooks if notebook.name == name]
     if not candidates:
-        available_names = sorted(
-            {notebook.name for notebook in _list_notebooks(connection)}
-        )
+        available_names = sorted({notebook.name for notebook in all_notebooks})
         _raise_not_found(name, available_names)
     if len(candidates) > 1:
         _raise_ambiguous(name, candidates)
@@ -278,7 +344,11 @@ def copy_ui_db(
     Notes
     -----
     The intended implementation copies ``ui.db`` and ``ui.db.wal`` as a pair.
+    A missing source file is reported immediately without retrying, since
+    retries and the "UI may be running" message only make sense for a file
+    that exists but is transiently unreadable.
     """
+    _require_ui_db_exists(ui_db_path)
     attempts = max(1, retries)
     copied_db_path = dest_dir / ui_db_path.name
     last_error: Exception | None = None
@@ -346,6 +416,7 @@ def open_ui_db(
     The default path uses the snapshot-copy strategy to tolerate a running UI.
     """
     if require_ui_closed:
+        _require_ui_db_exists(ui_db_path)
         return _connect_read_only(ui_db_path)
 
     snapshot_dir = Path(tempfile.mkdtemp(prefix="duckdb-ui-notebook-export-"))
@@ -391,7 +462,12 @@ def list_notebooks(ui_db_path: Path) -> list[NotebookInfo]:
         _close_quietly(connection)
 
 
-def list_versions(ui_db_path: Path, name: str) -> list[VersionInfo]:
+def list_versions(
+    ui_db_path: Path,
+    name: str,
+    *,
+    notebook_id: str | None = None,
+) -> list[VersionInfo]:
     """List versions for a named notebook.
 
     Parameters
@@ -400,6 +476,10 @@ def list_versions(ui_db_path: Path, name: str) -> list[VersionInfo]:
         Path to the ``ui.db`` file.
     name
         Notebook name whose versions should be listed.
+    notebook_id
+        Optional notebook identifier used to resolve the notebook
+        unambiguously instead of by name. When provided, it takes priority
+        over ``name`` even if the two do not match.
 
     Returns
     -------
@@ -409,9 +489,10 @@ def list_versions(ui_db_path: Path, name: str) -> list[VersionInfo]:
     Raises
     ------
     duckdb_ui_notebook_export.exceptions.NotebookNotFoundError
-        Raised when the notebook name does not exist.
+        Raised when the notebook name or ID does not exist.
     duckdb_ui_notebook_export.exceptions.AmbiguousNotebookError
-        Raised when the notebook name resolves to multiple notebooks.
+        Raised when the notebook name resolves to multiple notebooks and no
+        ``notebook_id`` was given.
     duckdb_ui_notebook_export.exceptions.UiDbAccessError
         Raised when the UI database cannot be read.
 
@@ -421,7 +502,7 @@ def list_versions(ui_db_path: Path, name: str) -> list[VersionInfo]:
     """
     connection = open_ui_db(ui_db_path)
     try:
-        notebook = _resolve_notebook(connection, name)
+        notebook = _resolve_notebook(connection, name, notebook_id=notebook_id)
         cursor = connection.execute(
             """
             SELECT CAST(version AS VARCHAR) AS version_id, created
@@ -447,6 +528,7 @@ def load_notebook(
     *,
     version_id: str | None = None,
     require_ui_closed: bool = False,
+    notebook_id: str | None = None,
 ) -> Notebook:
     """Load a notebook definition by name and optional version.
 
@@ -460,6 +542,11 @@ def load_notebook(
         Optional notebook version identifier to select.
     require_ui_closed
         When true, open the UI database directly instead of using a snapshot.
+    notebook_id
+        Optional notebook identifier used to resolve the notebook
+        unambiguously instead of by name. When provided, it takes priority
+        over ``name`` even if the two do not match. This is the escape hatch
+        for duplicate notebook names (see ``AmbiguousNotebookError``).
 
     Returns
     -------
@@ -469,9 +556,10 @@ def load_notebook(
     Raises
     ------
     duckdb_ui_notebook_export.exceptions.NotebookNotFoundError
-        Raised when the notebook name does not exist.
+        Raised when the notebook name or ID does not exist.
     duckdb_ui_notebook_export.exceptions.AmbiguousNotebookError
-        Raised when the notebook name resolves to multiple notebooks.
+        Raised when the notebook name resolves to multiple notebooks and no
+        ``notebook_id`` was given.
     duckdb_ui_notebook_export.exceptions.UiDbAccessError
         Raised when the UI database cannot be read.
 
@@ -481,7 +569,7 @@ def load_notebook(
     """
     connection = open_ui_db(ui_db_path, require_ui_closed=require_ui_closed)
     try:
-        notebook = _resolve_notebook(connection, name)
+        notebook = _resolve_notebook(connection, name, notebook_id=notebook_id)
         if version_id is None:
             cursor = connection.execute(
                 """

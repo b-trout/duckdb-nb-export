@@ -491,3 +491,72 @@ def test_ut_r_013_newer_storage_version_reports_duckdb_upgrade() -> None:
     message = str(error_info.value).lower()
     assert "duckdb" in message
     assert "update" in message or "upgrade" in message
+
+
+def test_ut_r_014_notebook_id_disambiguates_duplicate_names(
+    synthetic_ui_db: Path,
+) -> None:
+    """UT-R-014: notebook_id resolves a duplicate-name notebook unambiguously.
+
+    Parameters
+    ----------
+    synthetic_ui_db
+        Generated DuckDB UI database fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that passing ``notebook_id`` for a duplicated name
+        selects exactly the requested notebook instead of raising
+        ``AmbiguousNotebookError``.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 7 section.
+    """
+    notebooks = list_notebooks(synthetic_ui_db)
+    duplicate_b = next(
+        notebook
+        for notebook in notebooks
+        if notebook.name == "duplicate" and notebook.updated_at.hour == 3
+    )
+
+    notebook = load_notebook(
+        synthetic_ui_db,
+        "duplicate",
+        notebook_id=duplicate_b.notebook_id,
+    )
+
+    assert notebook.name == "duplicate"
+    assert [cell.sql for cell in notebook.cells] == ["SELECT 'b'"]
+
+
+def test_ut_r_015_missing_ui_db_reports_clear_not_found_error(
+    tmp_path: Path,
+) -> None:
+    """UT-R-015: a missing ui.db file reports a clear not-found error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a non-existing ``ui.db`` path.
+
+    Returns
+    -------
+    None
+        The test asserts that the error names the missing path and does not
+        misleadingly suggest that the UI might be running.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 7 section.
+    """
+    missing_ui_db = tmp_path / "does-not-exist" / "ui.db"
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        load_notebook(missing_ui_db, "any-notebook")
+
+    message = str(error_info.value)
+    assert str(missing_ui_db) in message
+    assert "not found" in message.lower()
+    assert "running" not in message.lower()

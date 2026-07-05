@@ -1,9 +1,10 @@
 # テスト設計書: DuckDB UI Notebook → HTML Export ツール
 
-- ステータス: テストスイート実装済み(103 passed / 5 skipped)
+- ステータス: テストスイート実装済み(106 passed / 5 skipped)
 - 作成日: 2026-07-05
 - 改訂: 2026-07-05(notebook JSONスキーマ実機調査(design doc 6.2#1/#3)完了を反映。2.1節・2.2節のブロック状況、8.2節のブロック理由、6.2節AT-010の内容を更新。新たな設計判断はなし)
 - 改訂: 2026-07-05(整合性レビュー反映。実装済みテストスイートとの不整合を解消。新たな設計判断はなし)
+- 改訂: 2026-07-05(第7回改訂 — `--notebook-id` オプション追加とui.db不在エラー改善に伴い、UT-R-014・UT-R-015・UT-C-023を追加。design doc 4.1節/7章の第7回改訂と対応)
 - 対象範囲: **Phase 1(MVP: CLIエクスポート)のみ**。Phase 1.5(マジックコマンド)・Phase 2(チャート埋め込み・C++コア移植)のテストは本書のスコープ外とする(関連ドキュメントのフェーズ分けは design doc 2.1節を参照)。
 - 関連ドキュメント:
   - Design Doc: `docs/design/duckdb-notebook-html-export-design.md`
@@ -130,6 +131,8 @@
 | UT-R-011 | `--ui-db <path>` を指定した場合、既定パス(`<HOME>/.duckdb/extension_data/ui/ui.db`)ではなく指定パスが読み込まれること | design doc 4.1節, 7章 |
 | UT-R-012 | `--require-ui-closed` 指定時、UI非稼働(ロックなし)であればスナップショットコピーを介さずui.dbを直接開いて読み取りが成功すること | design doc 4.1節, 7章, ADR-002 |
 | UT-R-013 | ツールの `duckdb` パッケージより新しいstorage versionで作成されたui.dbを開こうとした場合、「ツール側のduckdbパッケージ更新」を促す趣旨の明確なエラーメッセージ(英語)が返ること(CLIとしては終了コード4 — UT-C-018と相互参照。フィクスチャは2.4節。実行環境のduckdbが十分新しい場合はskip) | design doc 6.2#10, 8章, 7章, ADR-001 |
+| UT-R-014 | `notebook_id` を指定した場合、同名notebookが複数存在していても曖昧エラーにならず、指定IDのnotebookが一意に解決されること(同名衝突の脱出路) | design doc 4.1節, 7章(第7回改訂) |
+| UT-R-015 | `ui.db` ファイル自体が存在しない場合、「見つからない」旨の明確なエラーになり、「UIが起動中かもしれない」という誤誘導メッセージにならないこと | design doc 4.1節, 7章(第7回改訂) |
 
 ### 3.2 Executor層
 
@@ -211,6 +214,7 @@
 | UT-C-020 | `--list` 指定時、notebook一覧(名前・ID・更新日時)が表示されて終了すること(位置引数省略可) | design doc 7章 |
 | UT-C-021 | `--list-versions` 指定時、指定notebookのバージョン一覧(ID・作成日時)が表示されて終了すること | design doc 7章(第4回改訂 #19) |
 | UT-C-022 | `-o` 未指定時、既定の出力パスが `./<notebook-name>.html`(notebook名に不正文字がある場合はサニタイズ後の名前)になること | design doc 7章 |
+| UT-C-023 | `--notebook-id <id>` 指定時、同名notebookが複数存在していてもIDで一意に解決してエクスポートでき、位置引数 `<notebook-name>` を省略できること | design doc 4.1節, 7章(第7回改訂) |
 
 ---
 
