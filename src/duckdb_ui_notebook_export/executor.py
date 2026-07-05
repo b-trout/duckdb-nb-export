@@ -482,6 +482,79 @@ def _append_skipped_abort_results(
         cell_results.append(_empty_result(CellStatus.SKIPPED_ABORT, message))
 
 
+def _notebook_current_database(notebook: Notebook) -> str | None:
+    """Return the notebook-level database name from notebook metadata.
+
+    Parameters
+    ----------
+    notebook
+        Notebook whose ``database_info`` may name a current database.
+
+    Returns
+    -------
+    str | None
+        Database name stored as ``currentDatabase``, or None.
+    """
+    info = notebook.database_info or {}
+    value = info.get("current_database")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _apply_use_database(
+    connection: duckdb.DuckDBPyConnection,
+    database_name: str,
+    warnings: list[str],
+    failed_databases: set[str],
+) -> None:
+    """Switch the connection's default database with a best-effort ``USE``.
+
+    Parameters
+    ----------
+    connection
+        Dedicated DuckDB connection used by the export.
+    database_name
+        Database (catalog) name recorded in the notebook JSON.
+    warnings
+        Mutable warning list surfaced in the report and rendered HTML.
+    failed_databases
+        Names that already failed once; retried names are skipped so one
+        unresolvable name does not emit a warning per cell.
+
+    Returns
+    -------
+    None
+        On failure the connection keeps its current default database.
+
+    Notes
+    -----
+    Stored format v3 records database names only (design doc 6.3#9), so this
+    replay is best effort by design (ADR-008): the name resolves only when a
+    matching catalog is attached, e.g. via ``--db`` or an earlier ATTACH cell.
+    A failed ``USE`` raises ``CatalogException`` without aborting the
+    transaction, so execution continues against the current database.
+    """
+    if database_name in failed_databases:
+        return
+    quoted = database_name.replace('"', '""')
+    try:
+        connection.execute(f'USE "{quoted}"')
+    except duckdb.Error as error:
+        failed_databases.add(database_name)
+        warning = (
+            f"Could not switch to notebook database {database_name!r}; "
+            f"continuing with the current database. Pass --db or ATTACH the "
+            f"database in an earlier cell. ({error})"
+        )
+        warnings.append(warning)
+        LOGGER.warning(
+            "use_database_failed",
+            database=database_name,
+            error=str(error),
+        )
+
+
 def _restart_transaction(connection: duckdb.DuckDBPyConnection) -> None:
     """Start a fresh transaction after aborting the current one.
 
@@ -560,6 +633,16 @@ def execute_notebook(
             connection.execute("SET enable_external_access=false")
         connection.execute("BEGIN TRANSACTION")
 
+        failed_use_databases: set[str] = set()
+        current_database = _notebook_current_database(notebook)
+        if current_database is not None:
+            _apply_use_database(
+                connection,
+                current_database,
+                warnings,
+                failed_use_databases,
+            )
+
         for index, cell in enumerate(notebook.cells):
             remaining_count = len(notebook.cells) - index - 1
             if contains_transaction_statement(cell.sql):
@@ -571,6 +654,14 @@ def execute_notebook(
                 if stop_on_error:
                     break
                 continue
+
+            if cell.use_database is not None:
+                _apply_use_database(
+                    connection,
+                    cell.use_database,
+                    warnings,
+                    failed_use_databases,
+                )
 
             result, error, abandoned = _run_cell_in_thread(
                 connection,

@@ -459,24 +459,80 @@ def test_ut_x_020_no_external_access_disables_file_export(
     assert not output_csv.exists()
 
 
-def test_ut_x_021_notebook_connection_environment_is_replayed_before_execution(
+def test_ut_x_021_notebook_database_names_are_replayed_with_use(
     fresh_duckdb: Path,
+    tmp_path: Path,
 ) -> None:
-    """UT-X-021: notebook connection environment is replayed before execution.
+    """UT-X-021: stored database names are replayed via best-effort USE.
 
     Notes
     -----
-    Environment reproduction semantics depend on Reader implementation because
-    stored format v3 provides database names only. Once unblocked, this should
-    verify that ATTACH statements, extension loading, secrets, and variables
-    from notebook data are reproduced as far as possible before executing
-    cells.
+    Stored format v3 records database names only (design doc 6.3#9), so
+    environment replay is limited to ``USE``: the notebook-level
+    ``currentDatabase`` is applied once after BEGIN, and a cell-level
+    ``useDatabase`` is applied before that cell. The cell-level name here
+    resolves because an earlier cell ATTACHes it inside the transaction
+    (AT-008 guards that ATTACH works in a transaction).
 
     Traceability
     ------------
     design doc 4.2, ADR-008
     """
-    pytest.skip(
-        "environment reproduction semantics depend on Reader implementation; "
-        "stored format v3 provides database names only (design doc 6.3#9, ADR-008)"
+    other_db = tmp_path / "replay-other.duckdb"
+    duckdb.connect(str(other_db)).close()
+
+    notebook = Notebook(
+        name="executor-unit-test",
+        version_id="version-ut-x",
+        cells=[
+            Cell(sql=f"ATTACH '{other_db.as_posix()}' AS replay_other"),
+            Cell(sql="SELECT current_database()", use_database="replay_other"),
+        ],
+        database_info={"current_database": fresh_duckdb.stem},
     )
+
+    report = execute_notebook(notebook, str(fresh_duckdb))
+
+    statuses = [result.status for result in report.cell_results]
+    assert statuses == [CellStatus.OK, CellStatus.OK]
+    assert report.cell_results[1].rows == [("replay_other",)]
+    assert report.warnings == []
+
+
+def test_ut_x_022_unresolvable_database_name_warns_once_and_continues(
+    fresh_duckdb: Path,
+) -> None:
+    """UT-X-022: an unresolvable stored database name warns and continues.
+
+    Notes
+    -----
+    A failed ``USE`` raises ``CatalogException`` without aborting the
+    transaction, so cells still run against the current database. Each
+    unresolvable name produces exactly one warning even when repeated
+    across cells.
+
+    Traceability
+    ------------
+    design doc 4.2, ADR-008
+    """
+    notebook = Notebook(
+        name="executor-unit-test",
+        version_id="version-ut-x",
+        cells=[
+            Cell(sql="SELECT 1", use_database="missing_db"),
+            Cell(sql="SELECT 2", use_database="missing_db"),
+        ],
+        database_info={"current_database": "missing_notebook_db"},
+    )
+
+    report = execute_notebook(notebook, str(fresh_duckdb))
+
+    statuses = [result.status for result in report.cell_results]
+    assert statuses == [CellStatus.OK, CellStatus.OK]
+    assert report.cell_results[0].rows == [(1,)]
+    assert report.cell_results[1].rows == [(2,)]
+
+    use_warnings = [w for w in report.warnings if "Could not switch" in w]
+    assert len(use_warnings) == 2
+    assert any("missing_notebook_db" in w for w in use_warnings)
+    assert any("missing_db" in w for w in use_warnings)

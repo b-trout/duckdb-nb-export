@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Best-effort database-name replay: the notebook's stored
+  `currentDatabase` is applied with `USE` after the transaction starts,
+  and a cell's stored `useDatabase` is applied before that cell runs.
+  When the name does not match an attached catalog, the export warns
+  and continues with the current database
+  ([#7](https://github.com/b-trout/duckdb-nb-export/issues/7)).
+
 ## [0.0.1] - 2026-07-05
 
 Initial alpha release.
