@@ -6,6 +6,11 @@
   },
   "remoteUser": "vscode",
   "postCreateCommand": "uv sync && uv run pre-commit install",
+  "features": {
+    "ghcr.io/devcontainers/features/node:2.1.0": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    "ghcr.io/dirien/devcontainer-feature-codex/codex:0": {}
+  },
   "customizations": {
     "vscode": {
       "extensions": [
