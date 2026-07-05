@@ -100,12 +100,12 @@ def synthetic_ui_db(tmp_path: Path) -> Path:
                     "notebook_id": "nb-reader",
                     "versions": [
                         {
-                            "version_id": "v1",
+                            "version_id": "1",
                             "created_at": "2026-07-05T00:00:00Z",
                             "cells": [{"cell_type": "sql", "sql": "SELECT 1"}],
                         },
                         {
-                            "version_id": "v2",
+                            "version_id": "2",
                             "created_at": "2026-07-05T01:00:00Z",
                             "cells": [{"cell_type": "sql", "sql": "SELECT 2"}],
                         },
@@ -353,10 +353,14 @@ def test_ut_r_008_load_notebook_defaults_to_latest_version(
     -------
     None
         The test asserts that the newest version is returned when unspecified.
+
+    Notes
+    -----
+    Reader version IDs mirror integer ``notebook_versions.version`` values.
     """
     notebook = load_notebook(synthetic_ui_db, "reader-notebook")
 
-    assert notebook.version_id == "v2"
+    assert notebook.version_id == "2"
     assert [cell.sql for cell in notebook.cells] == ["SELECT 2"]
 
 
@@ -374,10 +378,14 @@ def test_ut_r_009_load_notebook_uses_requested_version(
     -------
     None
         The test asserts that ``version_id`` selects an older version.
-    """
-    notebook = load_notebook(synthetic_ui_db, "reader-notebook", version_id="v1")
 
-    assert notebook.version_id == "v1"
+    Notes
+    -----
+    Reader version IDs mirror integer ``notebook_versions.version`` values.
+    """
+    notebook = load_notebook(synthetic_ui_db, "reader-notebook", version_id="1")
+
+    assert notebook.version_id == "1"
     assert [cell.sql for cell in notebook.cells] == ["SELECT 1"]
 
 
