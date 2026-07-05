@@ -104,9 +104,11 @@ jobs:
         # build break (test design doc 6 章 運用注記, 7.3 節) -- so only
         # this step is allowed to continue on error, not the whole job,
         # which keeps regressions in the rest of the suite blocking.
-        # Routing that non-blocking failure to an owner (GitHub issue/Slack)
-        # is intentionally left open (test design doc 7.4 節, 未決定事項);
-        # for now it is only visible as a non-blocking warning in this step.
+        # Routing that non-blocking failure to an owner is handled by the
+        # scheduled assumption-watch workflow, which re-runs the assumptions
+        # marker weekly against the newest duckdb and files/updates a
+        # GitHub issue on failure (test design doc 7.4 節). Here in the
+        # per-PR run it stays a non-blocking warning only.
         continue-on-error: ${{ matrix.duckdb-version != '1.5.4' }}
         run: |
           uv run --with "${{ steps.duckdb.outputs.with-arg }}" pytest -m assumptions || code=$?
