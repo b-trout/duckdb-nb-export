@@ -47,8 +47,9 @@ GitHubリポジトリの Settings → Environments で、以下の2つの enviro
 ## 2. リリース手順(通常フロー)
 
 1. **バージョンを上げる**: `src/duckdb_ui_notebook_export/__init__.py` の `__version__` を更新する。バージョン番号の単一ソースはここのみであり(`pyproject.toml` は `dynamic = ["version"]` でここを参照する)、他のファイルを個別に更新する必要はない。
-2. **コミット & PRマージ**: 変更をコミットし、通常のPRフローで `main` にマージする。
-3. **タグを作成してpush**する。
+2. **CHANGELOG.md を更新する**: `CHANGELOG.md` の `[Unreleased]` セクションを新バージョンの節に繰り下げ、日付を記入する。
+3. **コミット & PRマージ**: 変更をコミットし、通常のPRフローで `main` にマージする。
+4. **タグを作成してpush**する。
 
    ```bash
    git tag v0.0.1
@@ -56,11 +57,11 @@ GitHubリポジトリの Settings → Environments で、以下の2つの enviro
    ```
 
    タグ名はバージョンに `v` を前置した形式(`v0.0.1` など)にする。
-4. **Actionsの実行を確認**する。GitHubの Actions タブで `Publish` ワークフローを開き、以下の順で成功することを確認する。
+5. **Actionsの実行を確認**する。GitHubの Actions タブで `Publish` ワークフローを開き、以下の順で成功することを確認する。
    1. `build`(sdist/wheelのビルド)
    2. `testpypi`(TestPyPIへの公開)
    3. `pypi`(PyPIへの本番公開。`testpypi` の成功後にのみ実行される)
-5. **インストール確認**をする。
+6. **インストール確認**をする。
 
    ```bash
    pip install duckdb-nb-export==0.0.1
