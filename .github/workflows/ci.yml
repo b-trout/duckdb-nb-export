@@ -43,8 +43,8 @@ jobs:
 
       - name: Run pytest
         run: |
-          uv run pytest
-          code=$?
+          uv run pytest || code=$?
+          code=${code:-0}
           # Exit code 5 means no tests were collected; don't fail CI for that.
           if [ "$code" -eq 5 ]; then
             exit 0
