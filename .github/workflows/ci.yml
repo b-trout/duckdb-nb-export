@@ -48,7 +48,7 @@ jobs:
     # Verifies that the declared dependency floors in pyproject.toml
     # actually work: every direct dependency is resolved at its lowest
     # allowed version and the full suite runs against that set (test
-    # design doc 7.2 節). The test job's duckdb matrix already covers
+    # design doc 7.2.1 節). The test job's duckdb matrix already covers
     # the duckdb floor; this leg covers jinja2/pydantic/pygments/
     # structlog, whose floors were otherwise never exercised. One
     # Ubuntu + Python 3.11 leg is enough — floor breakage is a
