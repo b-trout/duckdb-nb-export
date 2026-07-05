@@ -191,16 +191,22 @@ def test_ut_rd_001_cell_values_are_html_escaped() -> None:
 
 
 def test_ut_rd_002_cell_sql_is_html_escaped() -> None:
-    """UT-RD-002: Cell SQL containing HTML-sensitive characters is escaped."""
+    """UT-RD-002: Cell SQL containing HTML-sensitive characters is escaped.
+
+    Notes
+    -----
+    Pygments highlighting inserts spans between SQL tokens, so assertions use
+    escaping that is completed within single highlighted tokens.
+    """
     html = _html_for(
         "SELECT 1 < 2 AND name = 'a&b' AND note = '<tag>'",
         _ok_result([(True,)], columns=["ok"]),
     )
 
-    assert "SELECT 1 &lt; 2" in html
     assert "a&amp;b" in html
     assert "&lt;tag&gt;" in html
-    assert "SELECT 1 < 2" not in html
+    assert "a&b" not in html
+    assert "<tag>" not in html
 
 
 def test_ut_rd_003_create_secret_parameter_values_are_masked() -> None:
