@@ -1,0 +1,41 @@
+name: Windows verification
+
+# One-off investigation workflow for GitHub issue #5 (design doc 6.2#8):
+# does an OS-level copy of a locked ui.db (+wal) succeed on Windows the way
+# it does on Linux/macOS? Runs the dedicated verification script, then the
+# full test suite informationally. Trigger manually or by pushing to the
+# verification branch; this is not part of the regular PR CI.
+
+on:
+  push:
+    branches: [verify/windows-lock-copy]
+  workflow_dispatch:
+
+jobs:
+  locked-copy:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --python 3.11 --group dev
+
+      - name: Verify locked-file copy behavior
+        shell: bash
+        run: uv run python scripts/verify_windows_lock_copy.py
+
+      - name: Run full test suite (informational)
+        # Windows is not a supported platform yet; this step only maps the
+        # gap. Failures here must not mask the locked-copy verdict above.
+        continue-on-error: true
+        shell: bash
+        run: uv run pytest -q
