@@ -34,7 +34,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from duckdb_ui_notebook_export.models import Notebook
+from duckdb_ui_notebook_export.models import StoredNotebook
 
 pytestmark = pytest.mark.assumptions
 
@@ -552,7 +552,7 @@ def test_at_009_real_ui_db_contains_expected_notebook_schema() -> None:
 
 
 def test_at_010_real_ui_db_notebook_json_parses_as_model() -> None:
-    """AT-010: Real ui.db notebook JSON parses into the Notebook model.
+    """AT-010: Real ui.db notebook JSON parses into the StoredNotebook model.
 
     Parameters
     ----------
@@ -575,4 +575,4 @@ def test_at_010_real_ui_db_notebook_json_parses_as_model() -> None:
 
     assert json_values
     for raw_json in json_values:
-        Notebook.model_validate(json.loads(raw_json))
+        StoredNotebook.model_validate(json.loads(raw_json))
