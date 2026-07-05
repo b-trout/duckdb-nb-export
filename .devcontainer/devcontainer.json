@@ -1,0 +1,21 @@
+{
+  "name": "duckdb-ui-notebook-export",
+  "build": {
+    "context": "..",
+    "dockerfile": "../Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "uv sync",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python"
+      }
+    }
+  }
+}
