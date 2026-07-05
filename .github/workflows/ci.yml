@@ -10,7 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  lint:
+    # Static analysis is OS-independent, so this runs once per Python
+    # version instead of being crossed with the test job's os/duckdb-version
+    # axes (test design doc 7.1 節).
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,11 +44,73 @@ jobs:
       - name: Run pre-commit
         run: uv run pre-commit run --all-files
 
-      - name: Run pytest
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Phase 1 supports Linux/macOS only; Windows is out of scope until
+        # the locked-file-copy behavior is verified there (design doc 8 章,
+        # ADR-008, 6.2#8).
+        os: [ubuntu-latest, macos-latest]
+        # "3" resolves to the latest available Python 3.x release.
+        python-version: ["3.11", "3"]
+        # Lowest supported duckdb (pyproject.toml's floor) plus the newest
+        # PyPI release, run through the full suite (test design doc 7.2 節).
+        # duckdb has no pinned upper bound (design doc 8 章), so "latest" is
+        # re-resolved every run instead of trusting whatever uv.lock has.
+        duckdb-version: ["1.5.4", "latest"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --python ${{ matrix.python-version }} --group dev
+
+      - name: Select duckdb version override
+        id: duckdb
         run: |
-          uv run pytest || code=$?
+          if [ "${{ matrix.duckdb-version }}" = "1.5.4" ]; then
+            echo "with-arg=duckdb==1.5.4" >> "$GITHUB_OUTPUT"
+          else
+            echo "with-arg=duckdb" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run pytest (excluding assumption tests)
+        run: |
+          uv run --with "${{ steps.duckdb.outputs.with-arg }}" pytest -m "not assumptions" || code=$?
           code=${code:-0}
           # Exit code 5 means no tests were collected; don't fail CI for that.
+          if [ "$code" -eq 5 ]; then
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Run assumption tests
+        # AT-* guards design assumptions about DuckDB's behavior and the
+        # unofficial DuckDB UI schema (test design doc 6 章). On the pinned
+        # minimum-supported duckdb version, a failure is a real regression
+        # and must fail this job. On the newest duckdb release, a failure
+        # instead signals that an upstream change invalidated a documented
+        # assumption and calls for a design doc / ADR review rather than a
+        # build break (test design doc 6 章 運用注記, 7.3 節) -- so only
+        # this step is allowed to continue on error, not the whole job,
+        # which keeps regressions in the rest of the suite blocking.
+        # Routing that non-blocking failure to an owner (GitHub issue/Slack)
+        # is intentionally left open (test design doc 7.4 節, 未決定事項);
+        # for now it is only visible as a non-blocking warning in this step.
+        continue-on-error: ${{ matrix.duckdb-version != '1.5.4' }}
+        run: |
+          uv run --with "${{ steps.duckdb.outputs.with-arg }}" pytest -m assumptions || code=$?
+          code=${code:-0}
           if [ "$code" -eq 5 ]; then
             exit 0
           fi
