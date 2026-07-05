@@ -46,6 +46,11 @@ jobs:
 
   test:
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # windows-latest defaults to pwsh; the version-select and pytest
+        # steps below use bash syntax, so pin bash on every OS.
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
