@@ -173,6 +173,7 @@ MIT. See [LICENSE](https://github.com/b-trout/duckdb-nb-export/blob/main/LICENSE
 - [Design document](https://github.com/b-trout/duckdb-nb-export/blob/main/docs/design/duckdb-notebook-html-export-design.md) (Japanese)
 - [Architecture decision records](https://github.com/b-trout/duckdb-nb-export/blob/main/docs/adr/duckdb-notebook-html-export-adr.md) (Japanese)
 - [Test design document](https://github.com/b-trout/duckdb-nb-export/blob/main/docs/tests/duckdb-notebook-html-export-test-design.md) (Japanese)
+- [Changelog](https://github.com/b-trout/duckdb-nb-export/blob/main/CHANGELOG.md)
 
 ### Setup
 
