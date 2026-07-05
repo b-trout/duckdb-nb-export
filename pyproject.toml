@@ -8,8 +8,40 @@ dependencies = [
     "duckdb>=1.5.4",
 ]
 
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "S",
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.poe.tasks]
+format = "pre-commit run ruff-format --all-files"
+lint = "pre-commit run ruff-check --all-files"
+typecheck = "pre-commit run ty --all-files"
+audit = "pre-commit run pip-audit --all-files"
+
+[tool.poe.tasks.check]
+sequence = [
+    { ref = "format" },
+    { ref = "lint" },
+    { ref = "typecheck" },
+    { ref = "audit" },
+]
+
 [dependency-groups]
 dev = [
+    "pip-audit>=2.10.1",
     "poethepoet>=0.47.1",
     "pre-commit>=4.6.0",
     "pydantic>=2.13.4",
