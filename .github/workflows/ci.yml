@@ -54,7 +54,7 @@ jobs:
         # ADR-008, 6.2#8).
         os: [ubuntu-latest, macos-latest]
         # "3" resolves to the latest available Python 3.x release.
-        python-version: ["3.11", "3"]
+        python-version: ["3.11", "3.12", "3"]
         # Lowest supported duckdb (pyproject.toml's floor) plus the newest
         # PyPI release, run through the full suite (test design doc 7.2 節).
         # duckdb has no pinned upper bound (design doc 8 章), so "latest" is

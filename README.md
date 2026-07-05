@@ -7,7 +7,8 @@ Jupyter `nbconvert` equivalent.
 
 Status: alpha, Phase 1, CLI only. The package is not published on PyPI yet.
 It depends on DuckDB UI's unofficial internal `ui.db` schema, so a DuckDB UI
-update can break notebook discovery or parsing.
+update can break notebook discovery or parsing. This is an unofficial
+third-party tool, not affiliated with DuckDB, DuckDB Labs, or MotherDuck.
 
 ## For users
 
@@ -74,6 +75,9 @@ dark color schemes, and does not reference external resources.
 
 ### Safety model
 
+Exporting a notebook executes its SQL with your privileges. Do not export
+notebooks from sources you would not trust enough to run yourself.
+
 By default, notebook cells run inside one transaction and the exporter finishes
 with `ROLLBACK`, so changes inside the target database file are not retained.
 Use `--allow-writes` only when you want the exporter to commit those changes.
@@ -102,6 +106,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `-h`, `--help` | Show help and exit. | Off |
 | `-o`, `--output` | Output HTML path. | `<notebook-name>.html` under the allowed base |
 | `--output-dir` | Allowed base directory and default output directory. | Current directory |
+| `--notebook-id` | Export the notebook with this exact ID (from `--list`); use when names are ambiguous. | None |
 | `--db` | Target DuckDB database path for notebook re-execution. | Resolved from notebook metadata, then `:memory:` |
 | `--ui-db` | Path to DuckDB UI `ui.db`. | `~/.duckdb/extension_data/ui/ui.db` |
 | `--nb-version` | Notebook version identifier to export. | Latest version |
@@ -117,16 +122,31 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 
 Existing output files are not overwritten; a numeric suffix is added.
 
+If `-o`/`--output` points outside the allowed base directory (the current
+directory by default, or the directory passed to `--output-dir`), the export
+is rejected with exit code 3. To write outside the current directory, pass
+that location to `--output-dir` so it becomes the allowed base itself, for
+example:
+
+```bash
+duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
+```
+
 ### Exit codes
 
 | Code | Meaning |
 | ---: | --- |
 | 0 | Success. |
-| 1 | Notebook not found, or notebook name is ambiguous. |
+| 1 | Notebook not found, or notebook name is ambiguous (use `--notebook-id`). |
 | 2 | Cell execution stopped because `--stop-on-error` was set, or a timeout interrupt failed and the export ended partially. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
 | 4 | `ui.db` access or export setup failed, including lock, corruption, or storage-version mismatch. |
 | 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
+
+Without `--stop-on-error`, a run that completes exits 0 even if individual
+cells failed; per-cell failures are reported in the rendered HTML and on
+stderr, not through the exit code. Use `--stop-on-error` if you need failure
+detection through the exit code, for example in CI.
 
 ### Limitations
 
@@ -144,15 +164,15 @@ Existing output files are not overwritten; a numeric suffix is added.
 
 ### License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/b-trout/duckdb-nb-export/blob/main/LICENSE).
 
 ## For developers
 
 ### Documentation
 
-- [Design document](docs/design/duckdb-notebook-html-export-design.md) (Japanese)
-- [Architecture decision records](docs/adr/duckdb-notebook-html-export-adr.md) (Japanese)
-- [Test design document](docs/tests/duckdb-notebook-html-export-test-design.md) (Japanese)
+- [Design document](https://github.com/b-trout/duckdb-nb-export/blob/main/docs/design/duckdb-notebook-html-export-design.md) (Japanese)
+- [Architecture decision records](https://github.com/b-trout/duckdb-nb-export/blob/main/docs/adr/duckdb-notebook-html-export-adr.md) (Japanese)
+- [Test design document](https://github.com/b-trout/duckdb-nb-export/blob/main/docs/tests/duckdb-notebook-html-export-test-design.md) (Japanese)
 
 ### Setup
 

@@ -453,3 +453,91 @@ def test_ut_c_021_main_list_versions_prints_versions(
     assert exit_code == ExitCode.OK
     assert "Version" in captured.out
     assert "Created" in captured.out
+
+
+@pytest.fixture
+def duplicate_name_ui_db(tmp_path: Path) -> Path:
+    """Build a synthetic ui.db with two notebooks sharing the same name.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory where the generated database should be written.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to a generated ui.db file containing two "Duplicate" notebooks.
+    """
+    from tests.helpers.synthetic_ui_db import build_ui_db
+
+    try:
+        return build_ui_db(
+            [
+                {
+                    "name": "Duplicate",
+                    "notebook_id": "nb-duplicate-cli-a",
+                    "updated_at": "2026-07-05T02:00:00Z",
+                    "versions": [
+                        {
+                            "version_id": "1",
+                            "created_at": "2026-07-05T02:00:00Z",
+                            "cells": [{"cell_type": "sql", "sql": "SELECT 'a'"}],
+                        }
+                    ],
+                },
+                {
+                    "name": "Duplicate",
+                    "notebook_id": "nb-duplicate-cli-b",
+                    "updated_at": "2026-07-05T03:00:00Z",
+                    "versions": [
+                        {
+                            "version_id": "1",
+                            "created_at": "2026-07-05T03:00:00Z",
+                            "cells": [{"cell_type": "sql", "sql": "SELECT 'b'"}],
+                        }
+                    ],
+                },
+            ],
+            tmp_path,
+        )
+    except NotImplementedError as error:
+        pytest.skip(str(error))
+
+
+def test_ut_c_023_main_notebook_id_exports_duplicate_name_without_positional(
+    duplicate_name_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-023: --notebook-id exports a duplicate-name notebook, no positional.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 7 section.
+    """
+    from duckdb_ui_notebook_export.reader import list_notebooks
+
+    notebooks = list_notebooks(duplicate_name_ui_db)
+    target = next(
+        notebook
+        for notebook in notebooks
+        if notebook.name == "Duplicate" and notebook.updated_at.hour == 3
+    )
+
+    exit_code = main(
+        [
+            "--ui-db",
+            str(duplicate_name_ui_db),
+            "--notebook-id",
+            target.notebook_id,
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    assert (tmp_workdir / "out.html").exists()
