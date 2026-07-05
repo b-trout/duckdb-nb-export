@@ -21,9 +21,22 @@ Functions are intentionally unimplemented stubs for test-first development.
 """
 
 import enum
+import threading
 from dataclasses import dataclass
+from typing import Any
+
+import duckdb
+import structlog
 
 from duckdb_ui_notebook_export.models import Notebook
+
+LOGGER = structlog.get_logger()
+TRANSACTION_STATEMENT_TYPES = {duckdb.StatementType.TRANSACTION}
+DML_STATEMENT_TYPES = {
+    duckdb.StatementType.INSERT,
+    duckdb.StatementType.UPDATE,
+    duckdb.StatementType.DELETE,
+}
 
 
 class CellStatus(enum.Enum):
@@ -150,15 +163,21 @@ def resolve_target_db(notebook: Notebook, cli_db: str | None) -> tuple[str, bool
 
     Raises
     ------
-    NotImplementedError
-        Always raised until implementation is driven by tests.
+    None
+        This function does not raise package-specific exceptions.
 
     Notes
     -----
     Resolution priority is ``--db``, notebook JSON, then ``:memory:`` per
     ADR-008.
     """
-    raise NotImplementedError
+    if cli_db is not None:
+        return cli_db, False
+    if notebook.database_info is not None:
+        path = notebook.database_info.get("path")
+        if isinstance(path, str) and path:
+            return path, False
+    return ":memory:", True
 
 
 def contains_transaction_statement(sql: str) -> bool:
@@ -176,15 +195,304 @@ def contains_transaction_statement(sql: str) -> bool:
 
     Raises
     ------
-    NotImplementedError
-        Always raised until implementation is driven by tests.
+    None
+        Parse errors are intentionally treated as non-transaction SQL so
+        execution can surface the natural DuckDB error.
 
     Notes
     -----
     The intended implementation must avoid false positives in string literals
     and comments by using SQL parsing.
     """
-    raise NotImplementedError
+    try:
+        statements = duckdb.extract_statements(sql)
+    except duckdb.Error:
+        return False
+    return any(
+        statement.type in TRANSACTION_STATEMENT_TYPES for statement in statements
+    )
+
+
+def _empty_result(status: CellStatus, error_message: str | None = None) -> CellResult:
+    """Build a result object without rows.
+
+    Parameters
+    ----------
+    status
+        Cell execution status.
+    error_message
+        Optional failure explanation.
+
+    Returns
+    -------
+    CellResult
+        Empty result with the requested status.
+    """
+    return CellResult(
+        status=status,
+        columns=[],
+        rows=[],
+        truncated=False,
+        affected_rows=None,
+        error_message=error_message,
+    )
+
+
+def _fetch_limited_rows(
+    cursor: duckdb.DuckDBPyConnection,
+    max_rows: int,
+) -> tuple[list[tuple], bool]:
+    """Fetch at most ``max_rows + 1`` rows from a DuckDB cursor.
+
+    Parameters
+    ----------
+    cursor
+        Cursor returned by DuckDB execution.
+    max_rows
+        Maximum number of display rows to retain.
+
+    Returns
+    -------
+    tuple[list[tuple], bool]
+        Display rows and whether an additional row was available.
+    """
+    remaining = max_rows + 1
+    collected: list[tuple] = []
+    while remaining > 0:
+        batch = cursor.fetchmany(remaining)
+        if not batch:
+            break
+        collected.extend(batch)
+        remaining -= len(batch)
+    truncated = len(collected) > max_rows
+    return collected[:max_rows], truncated
+
+
+def _is_count_result(cursor: duckdb.DuckDBPyConnection) -> bool:
+    """Return whether DuckDB exposed a single ``Count`` column.
+
+    Parameters
+    ----------
+    cursor
+        Cursor returned by DuckDB execution.
+
+    Returns
+    -------
+    bool
+        True when the result shape is DuckDB's DML count result.
+    """
+    return (
+        cursor.description is not None
+        and len(cursor.description) == 1
+        and cursor.description[0][0] == "Count"
+    )
+
+
+def _result_from_cursor(
+    cursor: duckdb.DuckDBPyConnection,
+    statement_type: Any,
+    max_rows: int,
+) -> CellResult:
+    """Convert the last DuckDB statement result to a cell result.
+
+    Parameters
+    ----------
+    cursor
+        Cursor returned by DuckDB execution.
+    statement_type
+        Parsed DuckDB statement type for the executed statement.
+    max_rows
+        Maximum display rows.
+
+    Returns
+    -------
+    CellResult
+        Successful cell result.
+    """
+    if cursor.description is None:
+        return _empty_result(CellStatus.OK)
+
+    if statement_type in DML_STATEMENT_TYPES and _is_count_result(cursor):
+        rows, _ = _fetch_limited_rows(cursor, 1)
+        affected_rows = int(rows[0][0]) if rows else 0
+        return CellResult(
+            status=CellStatus.OK,
+            columns=[],
+            rows=[],
+            truncated=False,
+            affected_rows=affected_rows,
+            error_message=None,
+        )
+
+    columns = [column[0] for column in cursor.description]
+    rows, truncated = _fetch_limited_rows(cursor, max_rows)
+    return CellResult(
+        status=CellStatus.OK,
+        columns=columns,
+        rows=rows,
+        truncated=truncated,
+        affected_rows=None,
+        error_message=None,
+    )
+
+
+def _execute_cell(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+    max_rows: int,
+) -> CellResult:
+    """Execute one SQL cell and capture only the last statement result.
+
+    Parameters
+    ----------
+    connection
+        Dedicated DuckDB connection used by the export.
+    sql
+        SQL text to execute.
+    max_rows
+        Maximum display rows.
+
+    Returns
+    -------
+    CellResult
+        Successful cell result.
+    """
+    statements = duckdb.extract_statements(sql)
+    if not statements:
+        return _empty_result(CellStatus.OK)
+
+    cursor: duckdb.DuckDBPyConnection | None = None
+    statement_type: Any = None
+    for statement in statements:
+        cursor = connection.execute(statement)
+        statement_type = statement.type
+
+    if cursor is None:
+        return _empty_result(CellStatus.OK)
+    return _result_from_cursor(cursor, statement_type, max_rows)
+
+
+def _run_cell_in_thread(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+    max_rows: int,
+    cell_timeout: float,
+    interrupt_grace: float,
+) -> tuple[CellResult | None, BaseException | None, bool]:
+    """Run a cell in a worker thread with interrupt-based timeout handling.
+
+    Parameters
+    ----------
+    connection
+        Dedicated DuckDB connection used by the export.
+    sql
+        SQL text to execute.
+    max_rows
+        Maximum display rows.
+    cell_timeout
+        Seconds to wait before interrupting the cell.
+    interrupt_grace
+        Seconds to wait for the interrupted worker to return.
+
+    Returns
+    -------
+    tuple[CellResult | None, BaseException | None, bool]
+        Result, exception, and whether execution was abandoned after timeout.
+    """
+    state: dict[str, CellResult | BaseException] = {}
+
+    def worker() -> None:
+        try:
+            state["result"] = _execute_cell(connection, sql, max_rows)
+        except BaseException as error:
+            state["error"] = error
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(cell_timeout)
+    if thread.is_alive():
+        connection.interrupt()
+        thread.join(interrupt_grace)
+        if thread.is_alive():
+            return None, None, True
+        return (
+            _empty_result(
+                CellStatus.TIMEOUT,
+                "Cell execution exceeded the timeout and was interrupted.",
+            ),
+            None,
+            False,
+        )
+
+    result = state.get("result")
+    error = state.get("error")
+    return (
+        result if isinstance(result, CellResult) else None,
+        error if isinstance(error, BaseException) else None,
+        False,
+    )
+
+
+def _transaction_is_aborted(connection: duckdb.DuckDBPyConnection) -> bool:
+    """Probe whether the active DuckDB transaction is aborted.
+
+    Parameters
+    ----------
+    connection
+        Dedicated DuckDB connection used by the export.
+
+    Returns
+    -------
+    bool
+        True when DuckDB reports a transaction-level failure.
+    """
+    try:
+        connection.execute("SELECT 1")
+    except duckdb.TransactionException:
+        return True
+    return False
+
+
+def _append_skipped_abort_results(
+    cell_results: list[CellResult],
+    count: int,
+    message: str,
+) -> None:
+    """Append skipped results for cells that cannot be executed.
+
+    Parameters
+    ----------
+    cell_results
+        Mutable result list.
+    count
+        Number of skipped cells to append.
+    message
+        Skip explanation.
+
+    Returns
+    -------
+    None
+        The result list is mutated in place.
+    """
+    for _ in range(count):
+        cell_results.append(_empty_result(CellStatus.SKIPPED_ABORT, message))
+
+
+def _restart_transaction(connection: duckdb.DuckDBPyConnection) -> None:
+    """Start a fresh transaction after aborting the current one.
+
+    Parameters
+    ----------
+    connection
+        Dedicated DuckDB connection used by the export.
+
+    Returns
+    -------
+    None
+        The current transaction is rolled back and a new one is opened.
+    """
+    connection.execute("ROLLBACK")
+    connection.execute("BEGIN TRANSACTION")
 
 
 def execute_notebook(
@@ -226,11 +534,107 @@ def execute_notebook(
 
     Raises
     ------
-    NotImplementedError
-        Always raised until implementation is driven by tests.
+    duckdb.Error
+        Raised when setup or final transaction control fails outside cell
+        execution.
 
     Notes
     -----
     The intended implementation uses one transaction and rolls back by default.
     """
-    raise NotImplementedError
+    warnings: list[str] = []
+    used_memory_fallback = db == ":memory:"
+    if used_memory_fallback:
+        warning = "No target database was resolved; executing against :memory:."
+        warnings.append(warning)
+        LOGGER.warning("using_memory_database_fallback", database=db, warning=warning)
+
+    cell_results: list[CellResult] = []
+    connection = duckdb.connect(db)
+    try:
+        if no_external_access:
+            connection.execute("SET enable_external_access=false")
+        connection.execute("BEGIN TRANSACTION")
+
+        for index, cell in enumerate(notebook.cells):
+            remaining_count = len(notebook.cells) - index - 1
+            if contains_transaction_statement(cell.sql):
+                result = _empty_result(
+                    CellStatus.REJECTED_TRANSACTION_STATEMENT,
+                    "Transaction control statements are not allowed in notebook cells.",
+                )
+                cell_results.append(result)
+                if stop_on_error:
+                    break
+                continue
+
+            result, error, abandoned = _run_cell_in_thread(
+                connection,
+                cell.sql,
+                max_rows,
+                cell_timeout,
+                interrupt_grace,
+            )
+            if abandoned:
+                cell_results.append(
+                    _empty_result(
+                        CellStatus.TIMEOUT,
+                        "Cell execution exceeded the timeout and could not "
+                        "be interrupted.",
+                    ),
+                )
+                if not stop_on_error:
+                    _append_skipped_abort_results(
+                        cell_results,
+                        remaining_count,
+                        "Execution was abandoned after an uninterruptible timeout.",
+                    )
+                break
+
+            if error is not None:
+                cell_results.append(
+                    _empty_result(CellStatus.ERROR, str(error)),
+                )
+                if stop_on_error:
+                    break
+                if _transaction_is_aborted(connection):
+                    _append_skipped_abort_results(
+                        cell_results,
+                        remaining_count,
+                        "Skipped because the transaction is aborted.",
+                    )
+                    break
+                continue
+
+            if result is None:
+                result = _empty_result(
+                    CellStatus.ERROR,
+                    "Cell execution ended without a result.",
+                )
+            cell_results.append(result)
+
+            if result.status is not CellStatus.OK and stop_on_error:
+                break
+            if result.status is CellStatus.TIMEOUT and _transaction_is_aborted(
+                connection,
+            ):
+                _restart_transaction(connection)
+
+        if allow_writes:
+            connection.execute("COMMIT")
+        else:
+            connection.execute("ROLLBACK")
+    except Exception:
+        try:
+            connection.execute("ROLLBACK")
+        except duckdb.Error:
+            LOGGER.warning("rollback_after_executor_error_failed")
+        raise
+    finally:
+        connection.close()
+
+    return ExecutionReport(
+        cell_results=cell_results,
+        warnings=warnings,
+        used_memory_fallback=used_memory_fallback,
+    )
