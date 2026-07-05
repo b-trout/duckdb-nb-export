@@ -179,6 +179,9 @@ def _run_cli_export(
     -----
     The CLI is invoked via ``sys.executable -m`` to test the installed package
     module path without depending on a console script being installed.
+    ``--output-dir`` is passed explicitly (pointed at ``tmp_path``) because the
+    allowed base directory must be changed via that option rather than relying
+    on any implicit escape from the current directory.
     """
     output_path = tmp_path / f"{notebook_name}.html"
     result = subprocess.run(  # noqa: S603
@@ -191,6 +194,8 @@ def _run_cli_export(
             str(synthetic_ui_db),
             "--output",
             str(output_path),
+            "--output-dir",
+            str(tmp_path),
             "--yes",
             *extra_args,
         ],

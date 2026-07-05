@@ -49,6 +49,7 @@ from duckdb_ui_notebook_export.executor import (
 )
 from duckdb_ui_notebook_export.models import Cell, NotebookInfo, VersionInfo
 from duckdb_ui_notebook_export.reader import (
+    DEFAULT_UI_DB_PATH,
     list_notebooks,
     list_versions,
     load_notebook,
@@ -239,36 +240,6 @@ def _direct_stderr_logger() -> structlog.BoundLogger:
     return structlog.wrap_logger(structlog.PrintLogger(sys.stderr))
 
 
-def _effective_output_dir(
-    output: str | None,
-    output_dir: str | None,
-    ui_db: str | None,
-) -> str | None:
-    """Return the base directory to use for CLI output validation.
-
-    Parameters
-    ----------
-    output
-        Explicit output path from CLI arguments.
-    output_dir
-        Explicit allowed base directory from CLI arguments.
-    ui_db
-        Explicit DuckDB UI database path from CLI arguments.
-
-    Returns
-    -------
-    str | None
-        Directory argument to pass to ``resolve_output_path``.
-    """
-    if output_dir is not None or output is None or ui_db is None:
-        return output_dir
-
-    output_path = Path(output).expanduser()
-    if output_path.is_absolute():
-        return str(output_path.parent)
-    return None
-
-
 def _write_notebook_table(notebooks: Iterable[NotebookInfo]) -> None:
     """Write notebook metadata as a simple table to stdout.
 
@@ -424,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--ui-db",
-        help="Path to DuckDB UI ui.db.",
+        default=str(DEFAULT_UI_DB_PATH),
+        help="Path to DuckDB UI ui.db. Defaults to "
+        f"'{DEFAULT_UI_DB_PATH}' (<HOME>/.duckdb/extension_data/ui/ui.db).",
     )
     parser.add_argument(
         "--nb-version",
@@ -494,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path = resolve_output_path(
             args.output,
             args.notebook_name,
-            _effective_output_dir(args.output, args.output_dir, args.ui_db),
+            args.output_dir,
         )
     except OutputPathError as error:
         LOGGER.error("output_path_rejected", error=str(error))
