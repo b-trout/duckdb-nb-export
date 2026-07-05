@@ -9,7 +9,8 @@
   "features": {
     "ghcr.io/devcontainers/features/node:2.1.0": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/dirien/devcontainer-feature-codex/codex:0": {}
+    "ghcr.io/dirien/devcontainer-feature-codex/codex:0": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
   },
   "customizations": {
     "vscode": {
