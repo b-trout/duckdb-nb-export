@@ -223,3 +223,6 @@ __marimo__/
 
 # Claude Code
 .claude/
+
+# devcontainer
+.devcontainer/devcontainer-lock.json
