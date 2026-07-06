@@ -161,6 +161,9 @@ or a URI-style connect string such as `md:...`); a nonexistent local path is
 rejected with exit code 6 instead of silently creating an empty database
 file, which usually means the path was mistyped.
 
+Found a security issue, including a `CREATE SECRET` masking bypass? See
+[SECURITY.md](SECURITY.md) for how to report it privately.
+
 ### CLI reference
 
 The command is registered by `[project.scripts]` as `duckdb-nb-export`.

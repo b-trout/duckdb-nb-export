@@ -47,6 +47,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structured `output_path_deduplicated` warning naming the requested and
   actual paths is now emitted on stderr before the file is written
   ([#35](https://github.com/b-trout/duckdb-nb-export/issues/35)).
+- `SECURITY.md` documents how to report vulnerabilities privately (GitHub
+  private vulnerability reporting), the best-effort 14-day acknowledgement
+  expectation for this solo-maintainer alpha project, the
+  latest-release-only support policy, and scope notes distinguishing
+  by-design behavior (executing notebook SQL with the caller's
+  privileges; the already-documented `CREATE SECRET` masking gaps) from
+  in-scope reports (masking bypasses and other vulnerabilities). Linked
+  from the README's Safety model section
+  ([#65](https://github.com/b-trout/duckdb-nb-export/issues/65)).
+- `.github/dependabot.yml` now proposes weekly update PRs for GitHub
+  Actions pins and Python dependencies (grouped by minor/patch to reduce
+  PR noise); previously nothing updated action tags or `uv.lock`
+  automatically. The Python ecosystem entry uses Dependabot's `pip`
+  ecosystem rather than a dedicated `uv` ecosystem, since first-class
+  uv-lockfile support in Dependabot was not confirmed at the time of
+  writing; see the comment in `dependabot.yml` for the tradeoff.
+- `.github/workflows/pip-audit-watch.yml` runs `pip-audit` on a weekly
+  schedule (mirroring `assumption-watch.yml`'s pattern) and files or
+  updates a `dependency-vulnerability`-labeled GitHub issue on failure.
+  Previously `pip-audit` only ran as a pre-commit hook inside CI's lint
+  job, so a newly disclosed vulnerability produced no signal at all
+  during idle periods with no pull request activity
+  ([#63](https://github.com/b-trout/duckdb-nb-export/issues/63)).
 
 ### Changed
 
@@ -63,6 +86,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code 4) instead of being silently parsed and exported with no warning.
   Only stored notebook format v3 is supported by this release
   ([#58](https://github.com/b-trout/duckdb-nb-export/issues/58)).
+- The `publish.yml` release workflow now runs the full pytest suite before
+  building, asserts (on tag pushes) that the pushed tag matches
+  `__version__`, smoke-tests the TestPyPI install with a retry loop before
+  promoting to production PyPI (`pip install ... && duckdb-nb-export
+  --help`), and creates a GitHub Release from the tag using the matching
+  CHANGELOG.md section as release notes after a successful PyPI publish.
+  Previously, any tagged commit was published unconditionally with no test
+  run, no tag/version consistency check, no install verification, and no
+  Release. `workflow_dispatch` rehearsals still stop before PyPI (now at
+  the smoke-test job) and never create a Release
+  ([#59](https://github.com/b-trout/duckdb-nb-export/issues/59)).
+- CI now also runs on every push to `main`, not only on pull requests. A
+  PR's checks previously ran against the merge ref as of the last push to
+  the PR, not as of merge time, so a second PR merged in between could
+  land an untested combination on `main` (a "stale merge"); direct pushes
+  to `main` also ran no CI at all. The existing concurrency group already
+  dedupes overlapping runs, so this does not add queue pile-up
+  ([#61](https://github.com/b-trout/duckdb-nb-export/issues/61)).
 - `--max-rows` and `--cell-timeout` now reject non-positive values
   (`--max-rows` must be an integer >= 1; `--cell-timeout` and
   `--interrupt-grace` must be positive, finite numbers) with a clear
