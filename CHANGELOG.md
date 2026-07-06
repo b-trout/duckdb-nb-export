@@ -47,9 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structured `output_path_deduplicated` warning naming the requested and
   actual paths is now emitted on stderr before the file is written
   ([#35](https://github.com/b-trout/duckdb-nb-export/issues/35)).
-
-### Added
-
 - `SECURITY.md` documents how to report vulnerabilities privately (GitHub
   private vulnerability reporting), the best-effort 14-day acknowledgement
   expectation for this solo-maintainer alpha project, the
