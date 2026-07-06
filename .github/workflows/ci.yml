@@ -95,8 +95,9 @@ jobs:
         python-version: ["3.11", "3.12", "3"]
         # Lowest supported duckdb (pyproject.toml's floor) plus the newest
         # PyPI release, run through the full suite (test design doc 7.2 節).
-        # duckdb has no pinned upper bound (design doc 8 章), so "latest" is
-        # re-resolved every run instead of trusting whatever uv.lock has.
+        # duckdb has no pinned upper bound (design doc 8 章), so the "latest"
+        # leg must upgrade past whatever uv.lock has -- see the install step
+        # below for how (and why `uv run --with duckdb` cannot do it).
         duckdb-version: ["1.5.4", "latest"]
     steps:
       - name: Checkout
@@ -113,18 +114,23 @@ jobs:
       - name: Install dependencies
         run: uv sync --python ${{ matrix.python-version }} --group dev
 
-      - name: Select duckdb version override
-        id: duckdb
+      - name: Install matrix duckdb version
+        # An unconstrained `uv run --with duckdb` cannot test the newest
+        # PyPI release: that requirement is already satisfied by the locked
+        # duckdb installed by `uv sync`, so uv reuses the locked version.
+        # Instead, upgrade the synced environment in place; the pytest steps
+        # below then run with --no-sync so `uv run` does not restore uv.lock.
         run: |
-          if [ "${{ matrix.duckdb-version }}" = "1.5.4" ]; then
-            echo "with-arg=duckdb==1.5.4" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.duckdb-version }}" = "latest" ]; then
+            uv pip install --upgrade duckdb
           else
-            echo "with-arg=duckdb" >> "$GITHUB_OUTPUT"
+            uv pip install "duckdb==${{ matrix.duckdb-version }}"
           fi
+          uv run --no-sync python -c 'import duckdb; print("Testing against duckdb", duckdb.__version__)'
 
       - name: Run pytest (excluding assumption tests)
         run: |
-          uv run --with "${{ steps.duckdb.outputs.with-arg }}" pytest -m "not assumptions" || code=$?
+          uv run --no-sync pytest -m "not assumptions" || code=$?
           code=${code:-0}
           # Exit code 5 means no tests were collected; don't fail CI for that.
           if [ "$code" -eq 5 ]; then
@@ -149,7 +155,7 @@ jobs:
         # per-PR run it stays a non-blocking warning only.
         continue-on-error: ${{ matrix.duckdb-version != '1.5.4' }}
         run: |
-          uv run --with "${{ steps.duckdb.outputs.with-arg }}" pytest -m assumptions || code=$?
+          uv run --no-sync pytest -m assumptions || code=$?
           code=${code:-0}
           if [ "$code" -eq 5 ]; then
             exit 0

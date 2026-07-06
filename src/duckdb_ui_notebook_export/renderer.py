@@ -420,7 +420,9 @@ def _render_unexecuted_cell(sql: str) -> _RenderedCell:
 def _render_cell(sql: str, cell_type: str, result: CellResult) -> _RenderedCell:
     status_message = _status_message(result)
     chart_note = (
-        "Chart rendering is not supported in Phase 1; results are shown as a table."
+        "Chart rendering is not supported: DuckDB UI does not persist chart "
+        "configuration, so there is no stored chart to reproduce; results "
+        "are shown as a table."
         if cell_type != "sql"
         else None
     )
