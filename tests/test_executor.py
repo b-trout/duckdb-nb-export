@@ -23,6 +23,7 @@ from duckdb_ui_notebook_export.executor import (
     _empty_result,
     _requires_existence_check,
     contains_transaction_statement,
+    display_target_database,
     execute_notebook,
     resolve_target_db,
 )
@@ -1137,6 +1138,51 @@ def test_ut_x_030_requires_existence_check_skips_uri_schemes() -> None:
     assert _requires_existence_check("md:my_database") is False
     assert _requires_existence_check("s3://bucket/key.duckdb") is False
     assert _requires_existence_check("someschemey:whatever") is False
+
+
+def test_ut_x_049_display_target_database_memory() -> None:
+    """UT-X-049: ``:memory:`` displays verbatim.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert display_target_database(":memory:") == ":memory:"
+
+
+def test_ut_x_050_display_target_database_uri_scheme_shows_scheme_only() -> None:
+    """UT-X-050: URI-style connect strings display only the scheme.
+
+    Notes
+    -----
+    URIs may embed credentials (for example ``postgres://user:pass@host/db``
+    via the postgres scanner extension), so only the scheme name is shown,
+    never the full connect string.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert display_target_database("md:my_db") == "md: (URI)"
+    assert display_target_database("postgres://user:pass@host/db") == "postgres: (URI)"
+    assert "user" not in display_target_database("postgres://user:pass@host/db")
+    assert "pass" not in display_target_database("postgres://user:pass@host/db")
+
+
+def test_ut_x_051_display_target_database_plain_path_shows_basename_only() -> None:
+    """UT-X-051: plain filesystem paths display only the basename.
+
+    Notes
+    -----
+    Only the basename is shown (not the full path) for privacy, per the
+    user-approved decision on issue #56.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert display_target_database("/a/b/sales.duckdb") == "sales.duckdb"
+    assert display_target_database("relative/dir/my.db") == "my.db"
 
 
 def test_ut_x_031_nonexistent_db_path_raises_and_creates_no_file(

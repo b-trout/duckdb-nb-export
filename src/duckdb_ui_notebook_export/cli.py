@@ -46,6 +46,7 @@ from duckdb_ui_notebook_export.exceptions import (
 from duckdb_ui_notebook_export.executor import (
     CellStatus,
     ExecutionReport,
+    display_target_database,
     execute_notebook,
     resolve_target_db,
 )
@@ -289,6 +290,39 @@ def _utc_now_z() -> str:
         UTC timestamp with a trailing ``Z``.
     """
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _write_mode_display(*, allow_writes: bool, read_only: bool) -> str:
+    """Return a human-readable write-mode label for HTML metadata.
+
+    Parameters
+    ----------
+    allow_writes
+        Whether ``--allow-writes`` was passed.
+    read_only
+        Whether ``--read-only`` was passed.
+
+    Returns
+    -------
+    str
+        ``"writes committed (--allow-writes)"``, ``"read-only"``, or
+        ``"rollback (default)"``.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    ``--allow-writes`` and ``--read-only`` are mutually exclusive at the
+    argparse level, so at most one of them is ever True.
+    """
+    if allow_writes:
+        return "writes committed (--allow-writes)"
+    if read_only:
+        return "read-only"
+    return "rollback (default)"
 
 
 def _cell_error_exit_required(
@@ -671,6 +705,11 @@ def main(argv: list[str] | None = None) -> int:
             notebook_version_id=notebook.version_id,
             tool_version=__version__,
             warnings=report.warnings,
+            target_database=display_target_database(target_db),
+            write_mode=_write_mode_display(
+                allow_writes=args.allow_writes,
+                read_only=args.read_only,
+            ),
         )
         html = render_html(notebook, report, metadata)
         final_output_path = dedupe_output_path(output_path)

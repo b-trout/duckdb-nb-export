@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The exported HTML footer now records the target database and write mode
+  used for the export, alongside the existing timestamp/version fields.
+  The target database line shows a privacy-safe display form only:
+  `:memory:` verbatim, the scheme name for URI-style connect strings (e.g.
+  `md: (URI)`; the rest of the string, which may embed credentials, is
+  never shown), or the basename only for plain file paths (e.g.
+  `sales.duckdb`, never the full path). The write mode line shows one of
+  `rollback (default)`, `writes committed (--allow-writes)`, or
+  `read-only`
+  ([#56](https://github.com/b-trout/duckdb-nb-export/issues/56)).
 - The executor now logs a `cell_started` event before, and a
   `cell_finished` event after, every notebook cell at INFO level via
   `structlog` (to stderr), including the 1-based cell index, total cell

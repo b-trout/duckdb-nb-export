@@ -266,6 +266,46 @@ def _requires_existence_check(db: str) -> bool:
     return _URI_SCHEME_PATTERN.match(db) is None
 
 
+def display_target_database(db: str) -> str:
+    """Return a privacy-safe display form of the target database string.
+
+    Parameters
+    ----------
+    db
+        Target database string as passed to ``duckdb.connect`` (``--db``,
+        after resolution by ``resolve_target_db``).
+
+    Returns
+    -------
+    str
+        ``":memory:"`` unchanged; for URI-style connect strings (matched by
+        ``_URI_SCHEME_PATTERN``, e.g. ``md:...`` or ``postgres://...``) the
+        scheme name only, rendered as ``"<scheme>: (URI)"``; for plain
+        filesystem paths, the basename only (``Path(db).name``).
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    URI-style connect strings may embed credentials (for example
+    ``postgres://user:pass@host/db``), so only the scheme is ever shown,
+    never the rest of the string. Plain paths show only the basename, not
+    the full path, per the privacy decision on issue #56.
+    """
+    if db == ":memory:":
+        return ":memory:"
+
+    match = _URI_SCHEME_PATTERN.match(db)
+    if match is not None:
+        scheme = match.group(0)
+        return f"{scheme} (URI)"
+
+    return Path(db).name
+
+
 def contains_transaction_statement(sql: str) -> bool:
     """Detect transaction control statements in SQL text.
 

@@ -22,6 +22,7 @@ import pytest
 
 from duckdb_ui_notebook_export.cli import (
     _cell_error_exit_required,
+    _write_mode_display,
     confirm_execution,
     dedupe_output_path,
     main,
@@ -310,6 +311,82 @@ def test_ut_c_033_no_fail_on_cell_error_restores_exit_zero(
     )
 
     assert exit_code == ExitCode.OK
+
+
+def test_ut_c_047_write_mode_display_default_is_rollback() -> None:
+    """UT-C-047: default write mode (no flags) displays as rollback (default).
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert (
+        _write_mode_display(allow_writes=False, read_only=False) == "rollback (default)"
+    )
+
+
+def test_ut_c_048_write_mode_display_allow_writes() -> None:
+    """UT-C-048: ``--allow-writes`` displays as writes committed.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert (
+        _write_mode_display(allow_writes=True, read_only=False)
+        == "writes committed (--allow-writes)"
+    )
+
+
+def test_ut_c_049_write_mode_display_read_only() -> None:
+    """UT-C-049: ``--read-only`` displays as read-only.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert _write_mode_display(allow_writes=False, read_only=True) == "read-only"
+
+
+def test_ut_c_050_html_footer_shows_db_basename_and_allow_writes_mode(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-050: the exported HTML footer shows the db basename and write mode.
+
+    Notes
+    -----
+    Uses ``--allow-writes`` against a real on-disk database file so the
+    footer must show only the file's basename (never the full path, per
+    the issue #56 privacy decision) alongside the "writes committed"
+    write-mode label.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    output_path = tmp_workdir / "out.html"
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output_path),
+            "--allow-writes",
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    html = output_path.read_text(encoding="utf-8")
+    assert f"Target database {fresh_duckdb.name}" in html
+    assert str(fresh_duckdb.parent) not in html
+    assert "Write mode writes committed (--allow-writes)" in html
 
 
 def test_ut_c_046_explicit_memory_db_produces_no_fallback_warning(

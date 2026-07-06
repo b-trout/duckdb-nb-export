@@ -80,6 +80,17 @@ definition, re-executes each SQL cell against the target DuckDB database, and
 renders one standalone HTML file. The HTML has inline CSS, supports light and
 dark color schemes, and does not reference external resources.
 
+The rendered HTML footer records the export timestamp, DuckDB version,
+notebook version, tool version, target database, and write mode, so a
+downstream reader can tell how the export was produced without access to the
+original command line. The target database line shows only a privacy-safe
+display form, never the full connect string or path: `:memory:` is shown
+verbatim, URI-style connect strings such as `md:...` or `postgres://...`
+(which may embed credentials) show only the scheme, e.g. `md: (URI)`, and
+plain file paths show only the basename, e.g. `sales.duckdb`. The write mode
+line shows one of `rollback (default)`, `writes committed (--allow-writes)`,
+or `read-only`, matching the safety model described below.
+
 During execution, the exporter logs a `cell_started` and `cell_finished`
 event (via `structlog`, to stderr) for every cell, including its 1-based
 index, the total cell count, and, for `cell_finished`, the resulting status

@@ -170,6 +170,8 @@ _TEMPLATE = """<!doctype html>
     <div>DuckDB {{ metadata.duckdb_version }}</div>
     <div>Notebook version {{ metadata.notebook_version_id }}</div>
     <div>Tool version {{ metadata.tool_version }}</div>
+    <div>Target database {{ metadata.target_database }}</div>
+    <div>Write mode {{ metadata.write_mode }}</div>
     {% if metadata.warnings %}
     <div class="warnings">
       <strong>Warnings</strong>
@@ -211,6 +213,15 @@ class ExportMetadata:
         Export tool version.
     warnings
         Warning messages to include in metadata.
+    target_database
+        Privacy-safe display form of the target database (see
+        ``duckdb_ui_notebook_export.executor.display_target_database``):
+        ``":memory:"`` verbatim, the scheme only for URI-style connect
+        strings (e.g. ``"md: (URI)"``), or the basename only for plain
+        filesystem paths.
+    write_mode
+        Human-readable write mode: ``"rollback (default)"``, ``"writes
+        committed (--allow-writes)"``, or ``"read-only"``.
 
     Returns
     -------
@@ -232,6 +243,8 @@ class ExportMetadata:
     notebook_version_id: str
     tool_version: str
     warnings: list[str]
+    target_database: str
+    write_mode: str
 
 
 def mask_secrets(sql: str) -> str:

@@ -1056,6 +1056,8 @@ def test_ut_r_025_run_mode_cells_load_as_sql_and_render_no_chart_note(
             notebook_version_id="1",
             tool_version="0.1.0",
             warnings=[],
+            target_database=":memory:",
+            write_mode="rollback (default)",
         ),
     )
 

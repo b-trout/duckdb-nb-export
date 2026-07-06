@@ -212,6 +212,8 @@ def _metadata(notebook: Notebook, warnings: list[str] | None = None) -> ExportMe
         notebook_version_id=notebook.version_id,
         tool_version="0.1.0",
         warnings=warnings or [],
+        target_database=":memory:",
+        write_mode="rollback (default)",
     )
 
 
