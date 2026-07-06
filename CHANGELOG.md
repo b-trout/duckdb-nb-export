@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code 4) instead of being silently parsed and exported with no warning.
   Only stored notebook format v3 is supported by this release
   ([#58](https://github.com/b-trout/duckdb-nb-export/issues/58)).
+- CI now also runs on every push to `main`, not only on pull requests. A
+  PR's checks previously ran against the merge ref as of the last push to
+  the PR, not as of merge time, so a second PR merged in between could
+  land an untested combination on `main` (a "stale merge"); direct pushes
+  to `main` also ran no CI at all. The existing concurrency group already
+  dedupes overlapping runs, so this does not add queue pile-up
+  ([#61](https://github.com/b-trout/duckdb-nb-export/issues/61)).
 - `--max-rows` and `--cell-timeout` now reject non-positive values
   (`--max-rows` must be an integer >= 1; `--cell-timeout` and
   `--interrupt-grace` must be positive, finite numbers) with a clear
