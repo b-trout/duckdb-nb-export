@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code 4) instead of being silently parsed and exported with no warning.
   Only stored notebook format v3 is supported by this release
   ([#58](https://github.com/b-trout/duckdb-nb-export/issues/58)).
+- The `publish.yml` release workflow now runs the full pytest suite before
+  building, asserts (on tag pushes) that the pushed tag matches
+  `__version__`, smoke-tests the TestPyPI install with a retry loop before
+  promoting to production PyPI (`pip install ... && duckdb-nb-export
+  --help`), and creates a GitHub Release from the tag using the matching
+  CHANGELOG.md section as release notes after a successful PyPI publish.
+  Previously, any tagged commit was published unconditionally with no test
+  run, no tag/version consistency check, no install verification, and no
+  Release. `workflow_dispatch` rehearsals still stop before PyPI (now at
+  the smoke-test job) and never create a Release
+  ([#59](https://github.com/b-trout/duckdb-nb-export/issues/59)).
 - CI now also runs on every push to `main`, not only on pull requests. A
   PR's checks previously ran against the merge ref as of the last push to
   the PR, not as of merge time, so a second PR merged in between could

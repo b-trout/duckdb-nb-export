@@ -58,9 +58,12 @@ GitHubリポジトリの Settings → Environments で、以下の2つの enviro
 
    タグ名はバージョンに `v` を前置した形式(`v0.0.1` など)にする。
 5. **Actionsの実行を確認**する。GitHubの Actions タブで `Publish` ワークフローを開き、以下の順で成功することを確認する。
-   1. `build`(sdist/wheelのビルド)
-   2. `testpypi`(TestPyPIへの公開)
-   3. `pypi`(PyPIへの本番公開。`testpypi` の成功後にのみ実行される)
+   1. `test`(pytestのフルスイート実行)
+   2. `build`(sdist/wheelのビルド。タグpush時はここでタグ名とパッケージバージョンの一致も検証する)
+   3. `testpypi`(TestPyPIへの公開)
+   4. `smoke-test`(TestPyPIからのインストールと `duckdb-nb-export --help` の実行確認。TestPyPIの反映遅延に備えて数回リトライする)
+   5. `pypi`(PyPIへの本番公開。`smoke-test` の成功後にのみ実行される)
+   6. `release`(タグに対応するGitHub Releaseを作成し、CHANGELOG.mdの該当バージョン節を本文に使う。`pypi` の成功後にのみ実行される)
 6. **インストール確認**をする。
 
    ```bash
@@ -69,11 +72,14 @@ GitHubリポジトリの Settings → Environments で、以下の2つの enviro
 
    バージョンは手順1で上げた番号に置き換える。
 
+7. **GitHub Releaseを確認**する。`release` ジョブが自動で作成するため、通常は手動作業不要。CHANGELOG.mdの該当バージョン節が見つからない場合は、`Release v<version>. See CHANGELOG.md for details.` という汎用メッセージにフォールバックするため、リリースノートの充実にはCHANGELOG.mdの更新(手順2)を忘れないこと。
+
 ## 3. 予行のみ行いたい場合
 
 本番に公開せずTestPyPIだけで動作確認したい場合は、タグをpushせず、GitHubのActionsタブから `Publish` ワークフローを `workflow_dispatch` で手動実行する。
 
-- `workflow_dispatch` 実行時は `build` → `testpypi` のみが動作し、`pypi` ジョブは実行されない(`if: github.event_name == 'push'` により、手動実行では条件を満たさずスキップされる)。
+- `workflow_dispatch` 実行時は `test` → `build` → `testpypi` → `smoke-test` までが動作し、`pypi` と `release` ジョブは実行されない(いずれも `if: github.event_name == 'push'` により、手動実行では条件を満たさずスキップされる)。
+- `workflow_dispatch` にはタグが存在しないため、`build` ジョブのタグ⇔バージョン一致チェックも同様にスキップされる。
 - TestPyPI上のバージョンを確認したい場合は次の通り。
 
   ```bash
@@ -85,3 +91,5 @@ GitHubリポジトリの Settings → Environments で、以下の2つの enviro
 - **バージョン番号は再利用できない**: PyPI/TestPyPIともに、一度公開したバージョン番号は(削除後であっても)同じ番号で再公開できない。誤ったリリースをした場合は必ず新しいバージョン番号を使う。
 - **ワークフロー名・environment名を変更した場合は、PyPI側の Trusted Publisher 登録も同時に更新する**こと。`.github/workflows/publish.yml` のファイル名(`publish.yml`)や、`pypi` / `testpypi` という environment 名は、PyPI/TestPyPIの登録内容と一致している必要がある。片方だけ変更すると、OIDCでの認証に失敗し公開が失敗する。
 - タグpushは `main` にマージ済みのコミットに対して行うこと。タグの指す内容がそのままリリース物になる。
+- **タグ名とパッケージバージョンは一致させること**: `build` ジョブがタグpush時に `v` を除いたタグ名と `__version__` を比較し、不一致ならその場でワークフローを失敗させる。手順1でのバージョン更新を忘れてタグを打つと、ここで検知される。
+- `release` ジョブは `permissions: contents: write` を使ってタグに対応するGitHub Releaseを自動作成する。追加の手動操作は不要。

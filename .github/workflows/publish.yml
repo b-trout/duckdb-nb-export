@@ -13,8 +13,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build sdist and wheel
+  test:
+    # The publish workflow previously built and shipped whatever commit was
+    # tagged without ever running the test suite itself; a red PR-CI run (or
+    # a hotfix commit pushed straight to main, see ci.yml) could still be
+    # tagged and published. Run the suite here too so a release cannot skip
+    # it, regardless of how the tagged commit reached main.
+    name: Run test suite
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,6 +29,46 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --python 3.11 --group dev
+
+      - name: Run pytest
+        run: uv run pytest
+
+  build:
+    name: Build sdist and wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Check tag matches package version
+        # Only a tag push carries a version to check against; workflow_dispatch
+        # rehearsals have no tag at all (github.ref is a branch ref), so this
+        # step is skipped there rather than failing on a non-existent tag.
+        # This guards against tagging e.g. v0.1.0 while __version__ is still
+        # "0.0.2", which would otherwise silently publish 0.0.2 under the
+        # v0.1.0 tag/Release.
+        if: github.event_name == 'push'
+        run: |
+          uv sync --group dev
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(uv run python -c 'from duckdb_ui_notebook_export import __version__; print(__version__)')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag v$tag_version does not match package version $pkg_version (src/duckdb_ui_notebook_export/__init__.py). Update __version__ and re-tag before publishing." >&2
+            exit 1
+          fi
+          echo "Tag v$tag_version matches package version $pkg_version"
 
       - name: Build distributions
         run: uv build
@@ -57,12 +102,65 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
 
+  smoke-test:
+    name: Smoke test TestPyPI install
+    needs: testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Only needed to read __version__ for the install pin; the smoke
+        # test itself installs the published package, not this checkout.
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Determine expected version
+        id: version
+        run: |
+          uv sync --group dev
+          version="$(uv run python -c 'from duckdb_ui_notebook_export import __version__; print(__version__)')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install from TestPyPI and smoke-test the CLI
+        # TestPyPI can take a little while to make a just-uploaded release
+        # visible/downloadable, so a fresh `pip install` immediately after
+        # the testpypi job can 404 even though the upload succeeded. Retry
+        # a handful of times with a short sleep instead of failing the whole
+        # release on that propagation delay.
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          attempts=5
+          delay=30
+          for i in $(seq 1 "$attempts"); do
+            echo "Attempt $i/$attempts: installing duckdb-nb-export==$version from TestPyPI"
+            if python3 -m venv /tmp/smoke-venv && \
+               /tmp/smoke-venv/bin/pip install --quiet \
+                 --index-url https://test.pypi.org/simple/ \
+                 --extra-index-url https://pypi.org/simple \
+                 "duckdb-nb-export==$version"; then
+              break
+            fi
+            if [ "$i" -eq "$attempts" ]; then
+              echo "::error::Failed to install duckdb-nb-export==$version from TestPyPI after $attempts attempts" >&2
+              exit 1
+            fi
+            rm -rf /tmp/smoke-venv
+            sleep "$delay"
+          done
+          # --version is not implemented yet (see CLI reference in README),
+          # so --help is the smoke check: it exercises argument parsing and
+          # confirms the console-script entry point actually starts.
+          /tmp/smoke-venv/bin/duckdb-nb-export --help
+
   pypi:
     name: Publish to PyPI
     # Only a tag push may reach production; workflow_dispatch stops at the
-    # testpypi job above, so manual runs can never publish to PyPI.
+    # smoke-test job above, so manual runs can never publish to PyPI.
     if: github.event_name == 'push'
-    needs: testpypi
+    needs: smoke-test
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -79,3 +177,51 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    name: Create GitHub Release
+    # Tag push only, same as pypi: workflow_dispatch rehearsals have no tag
+    # to attach a Release to.
+    if: github.event_name == 'push'
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract CHANGELOG section for this version
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Pull the body of the "## [<version>] - ..." section out of
+          # CHANGELOG.md: from the matching heading up to (but not
+          # including) the next "## " heading. Kept as a small awk script
+          # rather than a dedicated tool since the format is stable and
+          # simple (Keep a Changelog style).
+          notes="$(awk -v ver="[$version]" '
+            $0 ~ "^## \\[" && index($0, ver) { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md)"
+          if [ -z "$(echo "$notes" | tr -d '[:space:]')" ]; then
+            # Fall back to a generic message rather than failing the release
+            # outright if CHANGELOG.md was not updated for this version, or
+            # its heading format didn't match.
+            notes="Release v$version. See CHANGELOG.md for details."
+          fi
+          {
+            echo "notes<<NOTES_EOF"
+            echo "$notes"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "$NOTES"
