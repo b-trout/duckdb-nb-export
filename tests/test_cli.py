@@ -386,6 +386,7 @@ def test_ut_c_058_prompt_header_shows_execution_facts(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "n")
 
+    output_path = Path("exports") / "Sales_Report.html"
     _confirm(
         [Cell(sql="SELECT 1"), Cell(sql="SELECT 2")],
         assume_yes=False,
@@ -393,7 +394,7 @@ def test_ut_c_058_prompt_header_shows_execution_facts(
         version_id="v42",
         target_db_display="/data/sales.duckdb",
         write_mode="rollback (default)",
-        output_path=Path("/exports/Sales_Report.html"),
+        output_path=output_path,
     )
 
     captured = capsys.readouterr()
@@ -402,7 +403,7 @@ def test_ut_c_058_prompt_header_shows_execution_facts(
     assert "2" in captured.out
     assert "/data/sales.duckdb" in captured.out
     assert "rollback (default)" in captured.out
-    assert "/exports/Sales_Report.html" in captured.out
+    assert str(output_path) in captured.out
 
 
 def test_ut_c_059_prompt_masks_create_secret_values(
@@ -1773,7 +1774,12 @@ def test_ut_c_051_cell_failure_reports_error_message_on_stderr(
     assert "cell_failed" in captured.err
     assert "missing_table" in captured.err
     assert "cells_failed_summary" in captured.err
-    assert str(tmp_workdir / "out.html") in captured.err
+    # structlog's ConsoleRenderer reprs the value, so Windows path
+    # separators appear escaped; assert on the escape-proof basename
+    # within the summary's "details in <path>" text instead of the full
+    # OS-dependent path string.
+    assert "details in" in captured.err
+    assert "out.html" in captured.err
 
 
 def test_ut_c_052_green_notebook_emits_no_cell_failure_events(
