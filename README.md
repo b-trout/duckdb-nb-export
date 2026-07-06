@@ -147,7 +147,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--notebook-id` | Export the notebook with this exact ID (from `--list`); use when names are ambiguous. | None |
 | `--db` | Target DuckDB database path for notebook re-execution. Must exist (a nonexistent local path is rejected instead of creating a new file). | Resolved from notebook metadata, then `:memory:` |
 | `--ui-db` | Path to DuckDB UI `ui.db`. | `~/.duckdb/extension_data/ui/ui.db` |
-| `--nb-version` | Notebook version identifier to export. | Latest version |
+| `--nb-version` | Notebook version identifier to export. Must be an integer string; an unknown (but well-formed) version is reported as exit code 1 (see `--list-versions`). | Latest version |
 | `--list` | List notebooks and exit. | Off |
 | `--list-versions` | List versions for the selected notebook and exit. | Off |
 | `--max-rows` | Maximum rows to render per cell. Must be a positive integer (>= 1). | `1000` |
@@ -182,10 +182,10 @@ duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
 | Code | Meaning |
 | ---: | --- |
 | 0 | Success. |
-| 1 | Notebook not found, or notebook name is ambiguous (use `--notebook-id`). |
-| 2 | One or more cells failed, timed out, or were skipped, or `--stop-on-error` stopped processing after the first cell error, or a timeout interrupt failed and the export ended partially. |
+| 1 | Notebook not found, notebook name is ambiguous (use `--notebook-id`), or `--nb-version` does not match any stored version of the resolved notebook (use `--list-versions`). |
+| 2 | One or more cells failed, timed out, or were skipped, or `--stop-on-error` stopped processing after the first cell error, or a timeout interrupt failed and the export ended partially. A non-integer `--nb-version`, or a non-positive `--max-rows`, `--cell-timeout`, or `--interrupt-grace` value, is also rejected with this code, as a standard argument-parsing error. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
-| 4 | `ui.db` access failed, including lock, corruption, or storage-version mismatch. |
+| 4 | `ui.db` access failed, including lock, corruption, storage-version mismatch, an unsupported stored notebook format, or a `ui.db` file whose schema does not match what this tool expects. |
 | 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
 | 6 | Notebook execution or HTML writing failed, including a missing or unusable `--db` target. |
 
@@ -215,7 +215,11 @@ the export itself did not run to completion as requested.
   count is not computed.
 - Long scalar values are truncated after 500 characters in HTML output.
 - The reader depends on DuckDB UI's unofficial schema and stored notebook
-  format v3.
+  format v3. A stored notebook whose `notebookSerializationFormat` is not 3
+  is rejected with a clear error (exit code 4) instead of being exported
+  with unverified, potentially incorrect results; a `ui.db` file whose
+  `notebooks` / `notebook_versions` tables or expected columns are missing
+  is rejected the same way instead of surfacing a raw DuckDB Catalog Error.
 - Notebook JSON's `currentDatabase` / `useDatabase` (database name) is
   applied with a best-effort `USE` on re-execution: it switches the database
   only when a catalog with that name is attached (via `--db` or an earlier

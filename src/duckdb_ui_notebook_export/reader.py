@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import shutil
 import tempfile
@@ -72,6 +73,55 @@ def _is_storage_version_error(error: Exception) -> bool:
         or "database version" in message
         or "version number" in message
     )
+
+
+_DETERMINISTIC_COPY_ERRNOS = frozenset(
+    {errno.ENOSPC, errno.EACCES, errno.EROFS, errno.ENAMETOOLONG}
+)
+
+
+def _deterministic_copy_error(
+    error: Exception, dest_dir: Path
+) -> UiDbAccessError | None:
+    """Classify a copy failure as deterministic (not worth retrying).
+
+    Parameters
+    ----------
+    error
+        Exception raised while copying or validating the snapshot.
+    dest_dir
+        Destination directory the snapshot was being copied into, named in
+        the resulting error message.
+
+    Returns
+    -------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError or None
+        A ready-to-raise error naming the real cause and destination
+        directory when ``error`` is an ``OSError`` with an errno that is
+        never transient (``ENOSPC``, ``EACCES``, ``EROFS``,
+        ``ENAMETOOLONG``); ``None`` when ``error`` should still be retried.
+
+    Notes
+    -----
+    ``copy_ui_db`` previously retried every failure three times, 0.5
+    seconds apart, then always raised a "the UI may be running" hint. That
+    hint is wrong and the retries are pointless for an out-of-space,
+    permission, or read-only-filesystem error, since retrying does not
+    change disk space, permissions, or mount state (see GitHub issue #64).
+    Other ``OSError``s (for example a transient ``EBUSY`` on some
+    platforms) and non-``OSError`` failures (for example a DuckDB
+    validation error while the UI is genuinely writing to ``ui.db``) are
+    left to the existing retry-then-hint path.
+    """
+    if not isinstance(error, OSError) or error.errno not in _DETERMINISTIC_COPY_ERRNOS:
+        return None
+
+    message = f"Cannot create ui.db snapshot in {dest_dir}: {error}."
+    if error.errno == errno.ENOSPC:
+        message += (
+            " Free space in the temp directory or set TMPDIR to a different location."
+        )
+    return UiDbAccessError(message)
 
 
 def _map_duckdb_open_error(error: Exception, ui_db_path: Path) -> UiDbAccessError:
@@ -558,6 +608,9 @@ def copy_ui_db(
             last_error = error
             if _is_storage_version_error(error):
                 raise _map_duckdb_open_error(error, copied_db_path) from error
+            deterministic_error = _deterministic_copy_error(error, dest_dir)
+            if deterministic_error is not None:
+                raise deterministic_error from error
             _LOGGER.warning(
                 "ui_db_snapshot_validation_failed",
                 attempt=attempt,

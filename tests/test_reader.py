@@ -1327,3 +1327,152 @@ def test_ut_r_032_fixture_ui_db_passes_schema_preflight(
     notebooks = list_notebooks(synthetic_ui_db)
 
     assert notebooks
+
+
+def test_ut_r_033_enospc_during_copy_fails_immediately_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-033: ENOSPC during copy fails immediately, naming dest_dir.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used for the source database and copy
+        destination.
+    monkeypatch
+        Pytest monkeypatch fixture used to force ``shutil.copy2`` to raise.
+
+    Returns
+    -------
+    None
+        The test asserts that a deterministic ``OSError`` with
+        ``errno.ENOSPC`` raised by the copy step is not retried (no
+        ``time.sleep`` calls), and that the resulting ``UiDbAccessError``
+        names the real cause and the destination directory instead of
+        suggesting the UI may be running.
+
+    Notes
+    -----
+    Traceability: GitHub issue #64.
+    """
+    import errno
+
+    source = tmp_path / "ui.db"
+    _build_readable_duckdb(source)
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+
+    def _raise_enospc(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("duckdb_ui_notebook_export.reader.shutil.copy2", _raise_enospc)
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        copy_ui_db(source, destination, retries=3, retry_wait=0.01)
+
+    assert sleep_calls == []
+    message = str(error_info.value)
+    assert "No space left on device" in message
+    assert str(destination) in message
+    assert "UI may be running" not in message
+
+
+def test_ut_r_034_eacces_during_copy_fails_immediately_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-034: EACCES during copy fails immediately, naming dest_dir.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used for the source database and copy
+        destination.
+    monkeypatch
+        Pytest monkeypatch fixture used to force ``shutil.copy2`` to raise.
+
+    Returns
+    -------
+    None
+        The test asserts that a deterministic ``OSError`` with
+        ``errno.EACCES`` is not retried and produces a message naming the
+        real cause and destination directory.
+
+    Notes
+    -----
+    Traceability: GitHub issue #64.
+    """
+    import errno
+
+    source = tmp_path / "ui.db"
+    _build_readable_duckdb(source)
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+
+    def _raise_eacces(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("duckdb_ui_notebook_export.reader.shutil.copy2", _raise_eacces)
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        copy_ui_db(source, destination, retries=3, retry_wait=0.01)
+
+    assert sleep_calls == []
+    message = str(error_info.value)
+    assert "Permission denied" in message
+    assert str(destination) in message
+    assert "UI may be running" not in message
+
+
+def test_ut_r_035_generic_validation_failure_still_retries_with_ui_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-035: a generic (non-errno-classified) failure still retries.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used for the corrupt source database.
+    monkeypatch
+        Pytest monkeypatch fixture used to observe ``time.sleep`` calls.
+
+    Returns
+    -------
+    None
+        The test asserts that a corrupt-file validation failure (not an
+        ``OSError`` with a deterministic errno) still retries up to the
+        requested attempt count and raises the "UI may be running" hint
+        message, preserving pre-existing behavior for transient failures.
+
+    Notes
+    -----
+    Traceability: GitHub issue #64. This guards against over-classifying:
+    only ENOSPC/EACCES/EROFS/ENAMETOOLONG ``OSError``s should skip retries.
+    """
+    source = tmp_path / "ui.db"
+    source.write_bytes(b"not a duckdb database")
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with pytest.raises(UiDbAccessError, match=r"UI.*running|require-ui-closed|retry"):
+        copy_ui_db(source, destination, retries=3, retry_wait=0.01)
+
+    assert len(sleep_calls) == 2
