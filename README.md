@@ -66,6 +66,13 @@ The default reader path uses a snapshot copy of `ui.db` and its WAL file, so
 the command can read notebooks while DuckDB UI is still running. Use
 `--require-ui-closed` only when you want to open `ui.db` directly.
 
+Notebook name matching resolves against the display name shown in DuckDB UI
+(the current notebook title) first, and falls back to DuckDB UI's internal
+notebook name (the `notebook_...` slug stored in `notebooks.name`) only if
+no title matches. `--list` always shows the display name. If several
+notebooks share the same display name, pass `--notebook-id <id>` (from
+`--list`) to select one unambiguously.
+
 ### How it works
 
 The exporter copies `ui.db` together with its WAL, reads the notebook
@@ -150,17 +157,24 @@ detection through the exit code, for example in CI.
 
 ### Limitations
 
-- Chart rendering is not supported in Phase 1. Chart cells are re-executed and
-  displayed as tables with a note; stored format v3 has no chart
-  representation.
+- Chart rendering is not supported, and this is a permanent limitation
+  rather than a pending feature: DuckDB UI does not persist chart
+  configuration anywhere (neither in notebook JSON nor in any `ui.db`
+  table, verified against the UI frontend bundle), so there is no stored
+  chart definition an exporter could reproduce. Cells are re-executed and
+  displayed as tables. If a future DuckDB UI version starts persisting
+  chart settings, chart export will be reconsidered.
 - Result display is limited to the first 1,000 rows by default. The total row
   count is not computed.
 - Long scalar values are truncated after 500 characters in HTML output.
 - The reader depends on DuckDB UI's unofficial schema and stored notebook
   format v3.
-- Notebook JSON's `currentDatabase` / `useDatabase` (database name) is not
-  applied on re-execution yet; environment replay is not yet implemented, so
-  pass `--db <path>` to point at the right database.
+- Notebook JSON's `currentDatabase` / `useDatabase` (database name) is
+  applied with a best-effort `USE` on re-execution: it switches the database
+  only when a catalog with that name is attached (via `--db` or an earlier
+  ATTACH cell), and otherwise warns and continues. Database names are not
+  resolved to file paths, so still pass `--db <path>` for exports that
+  depend on existing tables.
 
 ### License
 
@@ -241,7 +255,10 @@ on DuckDB `1.5.4` remain blocking.
 
 See design document section 2.1. Phase 1.5 adds a notebook-cell callable
 `export_notebook_html()` path after the target-database lock problem is
-resolved. Phase 2 targets client-side chart embedding and a C++ core.
+resolved. Phase 2 targets a C++ rendering core; client-side chart embedding
+is dormant because DuckDB UI does not persist chart settings (see
+Limitations), and will only be revisited if a future DuckDB UI version
+starts persisting them.
 
 ### Conventions
 
