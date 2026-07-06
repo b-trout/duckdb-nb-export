@@ -132,7 +132,11 @@ timeout-abort, only after) the point of failure.
 `ROLLBACK` cannot undo external side effects such as `COPY ... TO` file writes,
 writes to an attached database, remote writes, `INSTALL`, or `LOAD`. The CLI
 therefore asks for confirmation before execution; in non-interactive contexts,
-use `--yes` to make that confirmation explicit. `--no-external-access` runs
+use `--yes` to make that confirmation explicit. The confirmation prompt shows
+the notebook name, version, cell count, target database, write mode, and
+output path, followed by a short masked preview of each cell (first two
+non-empty lines, up to 160 characters); URI-style target databases are shown
+as their scheme only because URIs can embed credentials. `--no-external-access` runs
 with DuckDB external access disabled, which also disables external file reads
 such as CSV or Parquet scans.
 

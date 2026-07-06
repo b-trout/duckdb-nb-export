@@ -81,6 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The execution confirmation prompt now shows a compact header naming the
+  notebook, version, cell count, target database, write mode, and output
+  path, and previews each cell as a `CREATE SECRET`-masked excerpt (first
+  two non-empty lines, up to 160 characters) instead of dumping every
+  cell's full raw SQL. URI-style target databases are displayed as their
+  scheme only (for example `md: (URI)`) because URIs can embed
+  credentials. The target database is now resolved before the prompt so
+  it can be named there
+  ([#50](https://github.com/b-trout/duckdb-nb-export/issues/50)).
 - **Breaking:** `--nb-version` now rejects a non-integer value at the
   argument-parsing stage (exit code 2) instead of reaching the reader and
   failing with a `ui.db access failed` message (exit code 4). An unknown

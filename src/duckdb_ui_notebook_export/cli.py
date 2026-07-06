@@ -45,6 +45,7 @@ from duckdb_ui_notebook_export.exceptions import (
     UiDbAccessError,
 )
 from duckdb_ui_notebook_export.executor import (
+    _URI_SCHEME_PATTERN,
     CellStatus,
     ExecutionReport,
     display_target_database,
@@ -58,7 +59,11 @@ from duckdb_ui_notebook_export.reader import (
     list_versions,
     load_notebook,
 )
-from duckdb_ui_notebook_export.renderer import ExportMetadata, render_html
+from duckdb_ui_notebook_export.renderer import (
+    ExportMetadata,
+    mask_secrets,
+    render_html,
+)
 
 LOGGER = structlog.get_logger()
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[\s/\\:]+")
@@ -207,13 +212,109 @@ def resolve_output_path(
     return resolved_path
 
 
-def confirm_execution(cells: list[Cell], *, assume_yes: bool) -> bool:
+_CELL_PREVIEW_MAX_LINES = 2
+_CELL_PREVIEW_MAX_CHARS = 160
+
+
+def _target_db_display(target_db: str) -> str:
+    """Return a credential-safe display form of the target database.
+
+    Parameters
+    ----------
+    target_db
+        Resolved target database connect string.
+
+    Returns
+    -------
+    str
+        ``:memory:`` unchanged; URI-style connect strings reduced to their
+        scheme (for example ``md: (URI)``); plain paths as given.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    URI connect strings can embed credentials (for example
+    ``postgres://user:password@host/db``), so only the scheme is shown.
+    Plain paths are printed in full: the terminal is the user's own, unlike
+    exported HTML. The scheme detection uses the same pattern as the
+    executor's local-path check.
+    """
+    if target_db == ":memory:":
+        return target_db
+    match = _URI_SCHEME_PATTERN.match(target_db)
+    if match is not None:
+        return f"{match.group(0)} (URI)"
+    return target_db
+
+
+def _cell_preview(sql: str) -> str:
+    """Return a masked, truncated one-glance preview of a cell's SQL.
+
+    Parameters
+    ----------
+    sql
+        Raw cell SQL text.
+
+    Returns
+    -------
+    str
+        ``mask_secrets``-sanitized SQL reduced to at most the first two
+        non-empty lines and at most 160 characters, with `` …`` appended
+        when anything was cut.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Masking runs first so that even a truncated preview can never leak a
+    ``CREATE SECRET`` parameter value into the terminal (issue #50).
+    """
+    masked = mask_secrets(sql)
+    lines = [line.strip() for line in masked.splitlines() if line.strip()]
+    truncated = len(lines) > _CELL_PREVIEW_MAX_LINES
+    preview = "\n".join(lines[:_CELL_PREVIEW_MAX_LINES])
+    if len(preview) > _CELL_PREVIEW_MAX_CHARS:
+        preview = preview[:_CELL_PREVIEW_MAX_CHARS]
+        truncated = True
+    if truncated:
+        preview += " …"
+    return preview
+
+
+def confirm_execution(
+    cells: list[Cell],
+    *,
+    target_db_display: str,
+    write_mode: str,
+    output_path: Path,
+    notebook_name: str,
+    version_id: str,
+    assume_yes: bool,
+) -> bool:
     """Confirm that notebook cells should be executed.
 
     Parameters
     ----------
     cells
-        Cells whose SQL should be shown to the user before execution.
+        Cells whose SQL previews should be shown before execution.
+    target_db_display
+        Credential-safe display form of the target database (see
+        ``_target_db_display``).
+    write_mode
+        Human-readable write-mode label (see ``_write_mode_display``).
+    output_path
+        Resolved HTML output path.
+    notebook_name
+        Human-readable notebook name.
+    version_id
+        Selected notebook version identifier.
     assume_yes
         Whether confirmation should be skipped.
 
@@ -235,16 +336,27 @@ def confirm_execution(cells: list[Cell], *, assume_yes: bool) -> bool:
     return False instead of raising ``UiDbAccessError`` or ``SystemExit``. The
     caller maps that result to ``ExitCode.CONFIRMATION_DECLINED``. EOF at the
     prompt is treated the same as answering "n" (issue #45); previously the
-    ``EOFError`` escaped as a raw traceback with exit code 1.
+    ``EOFError`` escaped as a raw traceback with exit code 1. Cell SQL is
+    shown as a masked, truncated preview rather than in full, and the header
+    names the notebook, version, cell count, target database, write mode,
+    and output path so the user can judge the blast radius before answering
+    (issue #50).
     """
     if assume_yes:
         return True
     if not sys.stdin.isatty():
         return False
 
-    sys.stdout.write("The following SQL cells will be executed:\n")
+    sys.stdout.write("About to execute notebook cells:\n")
+    sys.stdout.write(f"  Notebook:        {notebook_name}\n")
+    sys.stdout.write(f"  Version:         {version_id}\n")
+    sys.stdout.write(f"  Cells:           {len(cells)}\n")
+    sys.stdout.write(f"  Target database: {target_db_display}\n")
+    sys.stdout.write(f"  Write mode:      {write_mode}\n")
+    sys.stdout.write(f"  Output path:     {output_path}\n")
+
     for index, cell in enumerate(cells, start=1):
-        sys.stdout.write(f"\n[{index}]\n{cell.sql}\n")
+        sys.stdout.write(f"\n[{index}]\n{_cell_preview(cell.sql)}\n")
 
     try:
         response = input("Continue with notebook execution? [y/N] ")
@@ -336,7 +448,7 @@ def _utc_now_z() -> str:
 
 
 def _write_mode_display(*, allow_writes: bool, read_only: bool) -> str:
-    """Return a human-readable write-mode label for HTML metadata.
+    """Return a human-readable write-mode label for HTML metadata and prompts.
 
     Parameters
     ----------
@@ -857,7 +969,19 @@ def _run(argv: list[str] | None = None) -> int:
             return int(ExitCode.OUTPUT_PATH_REJECTED)
 
     try:
-        if not confirm_execution(notebook.cells, assume_yes=args.yes):
+        target_db, used_memory_fallback = resolve_target_db(notebook, args.db)
+        if not confirm_execution(
+            notebook.cells,
+            target_db_display=_target_db_display(target_db),
+            write_mode=_write_mode_display(
+                allow_writes=args.allow_writes,
+                read_only=args.read_only,
+            ),
+            output_path=output_path,
+            notebook_name=notebook.name,
+            version_id=notebook.version_id,
+            assume_yes=args.yes,
+        ):
             LOGGER.error(
                 "confirmation_required",
                 error="Execution confirmation required; pass --yes to run "
@@ -865,7 +989,6 @@ def _run(argv: list[str] | None = None) -> int:
             )
             return int(ExitCode.CONFIRMATION_DECLINED)
 
-        target_db, used_memory_fallback = resolve_target_db(notebook, args.db)
         report = execute_notebook(
             notebook,
             target_db,

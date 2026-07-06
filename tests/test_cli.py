@@ -288,6 +288,39 @@ def test_ut_c_009_output_dir_becomes_allowed_base(
         resolve_output_path(str(outside), "Notebook", str(output_dir))
 
 
+def _confirm(
+    cells: list[Cell],
+    *,
+    assume_yes: bool,
+    **overrides: object,
+) -> bool:
+    """Call ``confirm_execution`` with default header facts.
+
+    Parameters
+    ----------
+    cells
+        Cells forwarded to ``confirm_execution``.
+    assume_yes
+        Whether confirmation should be skipped.
+    **overrides
+        Header keyword arguments overriding the test defaults.
+
+    Returns
+    -------
+    bool
+        Result of ``confirm_execution``.
+    """
+    kwargs: dict[str, object] = {
+        "target_db_display": ":memory:",
+        "write_mode": "rollback (default)",
+        "output_path": Path("exports/out.html"),
+        "notebook_name": "Notebook",
+        "version_id": "v1",
+    }
+    kwargs.update(overrides)
+    return confirm_execution(cells, assume_yes=assume_yes, **kwargs)  # type: ignore[arg-type]
+
+
 def test_ut_c_010_non_tty_confirmation_declines_without_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -295,7 +328,7 @@ def test_ut_c_010_non_tty_confirmation_declines_without_prompt(
     """UT-C-010: Declines in non-TTY mode without prompting."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
-    confirmed = confirm_execution([Cell(sql="SELECT 1")], assume_yes=False)
+    confirmed = _confirm([Cell(sql="SELECT 1")], assume_yes=False)
 
     captured = capsys.readouterr()
     assert confirmed is False
@@ -309,7 +342,7 @@ def test_ut_c_011_assume_yes_skips_confirmation(
     """UT-C-011: Confirms immediately when ``--yes`` is used."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
-    confirmed = confirm_execution([Cell(sql="SELECT 1")], assume_yes=True)
+    confirmed = _confirm([Cell(sql="SELECT 1")], assume_yes=True)
 
     captured = capsys.readouterr()
     assert confirmed is True
@@ -320,11 +353,11 @@ def test_ut_c_012_prompt_lists_all_cell_sql(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """UT-C-012: Shows every cell SQL body in the confirmation prompt."""
+    """UT-C-012: Shows every (short) cell SQL body in the confirmation prompt."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "y")
 
-    confirmed = confirm_execution(
+    confirmed = _confirm(
         [Cell(sql="SELECT 1 AS first"), Cell(sql="SELECT 2 AS second")],
         assume_yes=False,
     )
@@ -333,6 +366,156 @@ def test_ut_c_012_prompt_lists_all_cell_sql(
     assert confirmed is True
     assert "SELECT 1 AS first" in captured.out
     assert "SELECT 2 AS second" in captured.out
+
+
+def test_ut_c_058_prompt_header_shows_execution_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-058: The prompt header names all six execution facts.
+
+    Notes
+    -----
+    Notebook name, version, cell count, target database, write mode, and
+    output path must all be visible before the user answers.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    _confirm(
+        [Cell(sql="SELECT 1"), Cell(sql="SELECT 2")],
+        assume_yes=False,
+        notebook_name="Sales Report",
+        version_id="v42",
+        target_db_display="/data/sales.duckdb",
+        write_mode="rollback (default)",
+        output_path=Path("/exports/Sales_Report.html"),
+    )
+
+    captured = capsys.readouterr()
+    assert "Sales Report" in captured.out
+    assert "v42" in captured.out
+    assert "2" in captured.out
+    assert "/data/sales.duckdb" in captured.out
+    assert "rollback (default)" in captured.out
+    assert "/exports/Sales_Report.html" in captured.out
+
+
+def test_ut_c_059_prompt_masks_create_secret_values(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-059: CREATE SECRET parameter values never appear in the prompt.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    sql = (
+        "CREATE SECRET my_secret (TYPE S3, KEY_ID 'AKIAXXXX', "
+        "SECRET 'supersecretvalue')"
+    )
+    _confirm([Cell(sql=sql)], assume_yes=False)
+
+    captured = capsys.readouterr()
+    assert "supersecretvalue" not in captured.out
+    assert "AKIAXXXX" not in captured.out
+    assert "CREATE SECRET" in captured.out
+
+
+def test_ut_c_060_prompt_truncates_long_cell_sql(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-060: Long cell SQL is truncated to two lines and 160 chars.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    long_line = "SELECT " + ", ".join(f"col_{i}" for i in range(60))
+    multi_line = "SELECT 1\n\nSELECT 2\nSELECT 3_hidden_line"
+
+    _confirm(
+        [Cell(sql=long_line), Cell(sql=multi_line)],
+        assume_yes=False,
+    )
+
+    captured = capsys.readouterr()
+    assert long_line not in captured.out
+    assert "…" in captured.out
+    assert "3_hidden_line" not in captured.out
+    assert "SELECT 1" in captured.out
+    assert "SELECT 2" in captured.out
+
+
+def test_ut_c_061_target_db_display_hides_uri_details() -> None:
+    """UT-C-061: URI-style targets display as scheme only; paths as given.
+
+    Notes
+    -----
+    URI connect strings can embed credentials
+    (``postgres://user:password@host/db``), so only the scheme is shown.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    from duckdb_ui_notebook_export.cli import _target_db_display
+
+    assert _target_db_display(":memory:") == ":memory:"
+    assert _target_db_display("md:my_db") == "md: (URI)"
+    assert _target_db_display("postgres://user:password@host/db") == "postgres: (URI)"
+    assert _target_db_display("/data/sales.duckdb") == "/data/sales.duckdb"
+
+
+def test_ut_c_062_main_prompt_shows_target_db_before_confirmation(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-062: The target database is resolved before the prompt is shown.
+
+    Notes
+    -----
+    ``resolve_target_db`` must run before ``confirm_execution`` so the
+    prompt can name the database that will actually be used.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.CONFIRMATION_DECLINED
+    assert str(fresh_duckdb) in captured.out
+    assert str(tmp_workdir / "out.html") in captured.out
 
 
 def test_ut_c_013_main_returns_cell_error_when_a_cell_fails_by_default(
