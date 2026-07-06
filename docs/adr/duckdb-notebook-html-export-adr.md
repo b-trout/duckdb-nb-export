@@ -100,7 +100,7 @@ DuckDB UIのチャート機能の内部実装(描画ライブラリ、設定JSON
 
 ## ADR-005: notebookから「マジックコマンド」的に呼び出す方式
 
-- ステータス: Accepted(2026-07-05改訂: **Phase 1スコープから除外しPhase 1.5へ分離**。二段階アプローチ(案A→案B)自体は維持)
+- ステータス: Accepted(2026-07-05改訂: **Phase 1スコープから除外しPhase 1.5へ分離**。二段階アプローチ(案A→案B)自体は維持。2026-07-05第10回改訂: Phase 1.5の着手条件は達成 — 未解決事項の同日追記を参照)
 
 ### コンテキスト
 単なる外部CLIツールに留めず、DuckDB UIのSQLセルから直接エクスポートを起動できる体験(Jupyterの `%%` マジックコマンド相当)を提供したい。しかしDuckDBの素のSQLには、外部ファイル書き出しや任意コードの実行手段が標準では存在しない。実現には何らかの形で**DuckDB拡張(関数)としてSQLから呼び出し可能な入り口**を作る必要がある。
@@ -136,7 +136,7 @@ DuckDB UIのチャート機能の内部実装(描画ライブラリ、設定JSON
 - テーブル関数として結果パスを返すのか、単に副作用としてファイルを書くだけで良いのか、SQLインターフェースの形はGoal 2(design doc 2.2節)でスカラー関数+戻り値パスとして確定済み。
 - 対象DBロック問題の解決策(a)/(b)の評価(Phase 1.5着手条件)。
   - 2026-07-05追記: **調査は(a)スナップショットコピー方式を優先する**と決定。ui.dbで確立済みのWALセットコピー方式(ADR-002)の延長で技術リスクが低く、非公開仕様に依存しないため。残る評価軸は対象DBのサイズ・整合性・コピーコスト。(b)UI内部HTTPエンドポイントへの相乗りは、(a)が巨大DBでコスト面から不成立と判明した場合のフォールバック候補として残す(design doc 6.2#6)。
-- **2026-07-05追記(GitHub Issue #13、解消): notebookコンテキスト伝播は存在しないことを確定**。DuckDB UIフロントエンドバンドル(ui拡張 0dfdf34 / hatchling.11eef943)を静的解析した結果、セル実行は `/ddb/run` へ生SQLテキストをbodyでPOSTするのみで、ヘッダー全集合も `X-DuckDB-UI-Connection-Name`(`connection_<ランダム>` でnotebookとは無関係)・Database-Name・Schema-Name・Parameter系・Result系・Errors-As-JSON・Request-Description・Extension-Versionに限られ、notebookId/cellId系のヘッダーは存在しない。`runCell()` がcellIdを渡す先はクライアント側テレメトリのみで、SQL末尾に付与される `-- MD_SQL_METADATA: {...}` コメントも固定値のみである。したがって `export_notebook_html('current', ...)` の自動解決は実現不可能であり、design doc 2.2節Goal 2に定義済みのフォールバック(明示的なnotebook名/IDを必須とし、ない場合は明確なエラー)を**恒久仕様**に格上げする。なお `_duckdb_ui.main.current_notebook_id` テーブル(design doc 6.3#9)は「最後に開いたnotebook」をタブ切替・新規作成時にのみ更新する永続化であり、セル実行のタイミングとは同期しないため、`'current'` の近似解決に用いることは**採用しない**(複数notebookタブを開いている環境では実行中のセルと異なるnotebookに誤って解決されうるため)。
+- **2026-07-05追記(GitHub Issue #13、解消): notebookコンテキスト伝播は存在しないことを確定**。DuckDB UIフロントエンドバンドル(ui拡張 0dfdf34 / hatchling.11eef943)を静的解析した結果、セル実行は `/ddb/run` へ生SQLテキストをbodyでPOSTするのみで、ヘッダー全集合も `X-DuckDB-UI-Connection-Name`(`connection_<ランダム>` でnotebookとは無関係)・Database-Name・Schema-Name・Parameter系・Result系・Errors-As-JSON・Request-Description・Extension-Versionに限られ、notebookId/cellId系のヘッダーは存在しない。`runCell()` がcellIdを渡す先はクライアント側テレメトリのみで、SQL末尾に付与される `-- MD_SQL_METADATA: {...}` コメントも固定値のみである。したがって `export_notebook_html('current', ...)` の自動解決は実現不可能であり、design doc 2.2節Goal 2に定義済みのフォールバック(明示的なnotebook名/IDを必須とし、`'current'` が渡された場合・名前/IDがない場合は明確なエラー)を**恒久仕様**に格上げする。なお `_duckdb_ui.main.current_notebook_id` テーブル(design doc 6.3#9)は「最後に開いたnotebook」をタブ切替・新規作成時にのみ更新する永続化であり、セル実行のタイミングとは同期しないため、`'current'` の近似解決に用いることは**採用しない**(複数notebookタブを開いている環境では実行中のセルと異なるnotebookに誤って解決されうるため)。
 - **2026-07-05追記(GitHub Issue #14、解消): 対象DBロック問題は(a)スナップショットコピー方式で確定、(b)は打ち切り**。NVMe SSD / duckdb 1.5.4 / Linux上で、RW接続保持プロセスがありWAL未checkpoint変更がある条件下、`shutil.copy2` によるコピー時間を2回の独立実測で測定した(結果は整合)。1GB級はコピー平均0.5〜0.9秒、3GB級は平均3.1〜4.7秒(コールド/ウォームキャッシュで変動)、10GiB外挿で約10〜16秒(ページキャッシュが効かない定常値ベース)。WALのみに存在する未checkpoint変更は、本体+WALセットコピーのread-only openで両サイズ・複数マーカー行にわたり正しく読めることを確認した。制約として、コピー中は対象DBサイズの約2倍の空き容量が一時的に必要であり、実装では事前の空き容量チェック(対象サイズ×2以上、余裕を見て×2.5)ガードと、コピー失敗時のtry/finallyクリーンアップを設計に含める(HDD/NFS/メモリ逼迫環境ではより遅くなりうる)。これによりPhase 1.5のロック問題解決策は**(a)スナップショットコピー方式で確定**し、(b)UI内部HTTPエンドポイント相乗りの調査は打ち切る。**Phase 1.5の着手条件(design doc 2.1節)は達成した**。
 
 ---
