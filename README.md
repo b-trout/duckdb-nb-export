@@ -163,7 +163,10 @@ detection through the exit code, for example in CI.
   table, verified against the UI frontend bundle), so there is no stored
   chart definition an exporter could reproduce. Cells are re-executed and
   displayed as tables. If a future DuckDB UI version starts persisting
-  chart settings, chart export will be reconsidered.
+  chart settings, chart export will be reconsidered. Chart cells cannot
+  be detected in stored notebook data at all: stored format v3 does not
+  record whether a cell was displayed as a chart, so exported HTML shows
+  such cells as ordinary SQL cells.
 - Result display is limited to the first 1,000 rows by default. The total row
   count is not computed.
 - Long scalar values are truncated after 500 characters in HTML output.

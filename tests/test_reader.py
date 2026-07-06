@@ -989,3 +989,74 @@ def test_ut_r_024_cleanup_stale_snapshots_nonexistent_root_does_not_raise(
     missing_root = tmp_path / "does-not-exist"
 
     _cleanup_stale_snapshots(temp_root=missing_root)
+
+
+def test_ut_r_025_run_mode_cells_load_as_sql_and_render_no_chart_note(
+    tmp_path: Path,
+) -> None:
+    """UT-R-025: a stored cell's ``runMode`` never yields a chart cell type.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that a stored cell carrying ``runMode`` loads as
+        an internal ``Cell`` with ``cell_type == "sql"``, and that the
+        rendered HTML contains no chart-fallback note.
+
+    Notes
+    -----
+    Pins the production behavior established by issue #36: stored notebook
+    format v3 has no field that records whether a cell was displayed as a
+    chart in DuckDB UI. ``runMode`` is an execution mode (``"default"`` or
+    ``"instant"``, per real fixtures and ``scripts/regenerate_ui_db_fixtures.py``),
+    not a display mode, so it must not be mapped to ``cell_type="chart"``.
+    """
+    from duckdb_ui_notebook_export.executor import ExecutionReport
+    from duckdb_ui_notebook_export.renderer import ExportMetadata, render_html
+
+    ui_db_path = tmp_path / "ui.db"
+    notebook_id = "44444444-4444-4444-4444-444444444444"
+    stored_json = (
+        '{"notebookSerializationFormat": 3, "cells": ['
+        '{"query": "SELECT 1", "cellId": 1, "isActive": true, '
+        '"runMode": "instant"}'
+        '], "viewMode": {"mode": "default"}, "version": 1}'
+    )
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [notebook_id, "notebook_runmode0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [notebook_id, "Run Mode Notebook", stored_json],
+        )
+    finally:
+        connection.close()
+
+    notebook = load_notebook(ui_db_path, "Run Mode Notebook")
+
+    assert len(notebook.cells) == 1
+    assert notebook.cells[0].cell_type == "sql"
+
+    html = render_html(
+        notebook,
+        ExecutionReport(cell_results=[], warnings=[], used_memory_fallback=False),
+        ExportMetadata(
+            exported_at_utc="2026-07-05T00:00:00Z",
+            duckdb_version="v1.5.4",
+            notebook_version_id="1",
+            tool_version="0.1.0",
+            warnings=[],
+        ),
+    )
+
+    assert "Chart rendering is not supported" not in html

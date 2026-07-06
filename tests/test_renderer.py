@@ -22,6 +22,9 @@ These tests encode the renderer contract from design document section 3.3.
 
 import re
 
+import duckdb
+import pytest
+
 from duckdb_ui_notebook_export.executor import (
     CellResult,
     CellStatus,
@@ -240,6 +243,82 @@ def test_ut_rd_004_create_secret_structural_elements_remain_visible() -> None:
     assert "CREATE SECRET my_secret" in masked
     assert "TYPE s3" in masked
     assert "PROVIDER credential_chain" in masked
+
+
+def test_ut_rd_004a_multi_statement_cell_with_leading_select_survives() -> None:
+    """UT-RD-004a: A SELECT statement before CREATE SECRET is preserved."""
+    sql = "SELECT count(*) FROM t; CREATE SECRET s (TYPE S3, SECRET 'topsecret')"
+
+    masked = mask_secrets(sql)
+
+    assert "SELECT count(*) FROM t" in masked
+    assert "CREATE SECRET s" in masked
+    assert "TYPE S3" in masked
+    assert "SECRET ***" in masked
+    assert "topsecret" not in masked
+
+
+def test_ut_rd_004b_multi_statement_cell_with_trailing_select_survives() -> None:
+    """UT-RD-004b: A SELECT statement after CREATE SECRET is preserved.
+
+    Notes
+    -----
+    Regression test for issue #29: masking previously scoped parameter
+    parsing to the whole cell text via ``sql.find("(")``/``sql.rfind(")")``,
+    which silently dropped every statement after the CREATE SECRET call.
+    """
+    sql = "CREATE SECRET s (TYPE S3, SECRET 'topsecret'); SELECT f(1)"
+
+    masked = mask_secrets(sql)
+
+    assert "CREATE SECRET s" in masked
+    assert "TYPE S3" in masked
+    assert "SECRET ***" in masked
+    assert "topsecret" not in masked
+    assert "SELECT f(1)" in masked
+
+
+def test_ut_rd_004c_multi_statement_cell_with_paren_and_quote_noise() -> None:
+    """UT-RD-004c: Parens/quotes in other statements do not confuse masking."""
+    sql = "SELECT 'a(b' AS x; CREATE SECRET s (TYPE S3, SECRET 'v'); SELECT ')' AS y"
+
+    masked = mask_secrets(sql)
+
+    assert "SELECT 'a(b' AS x" in masked
+    assert "CREATE SECRET s" in masked
+    assert "TYPE S3" in masked
+    assert "SECRET ***" in masked
+    assert "'v'" not in masked
+    assert "SELECT ')' AS y" in masked
+
+
+def test_ut_rd_004d_parse_failure_falls_back_to_whole_text_masking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-RD-004d: A statement-parsing failure falls back to whole-text masking.
+
+    Notes
+    -----
+    Over-masking (falling back to the previous whole-cell-text behavior) is
+    preferable to leaking a secret value when statement splitting itself
+    fails, so ``duckdb.extract_statements`` raising ``duckdb.Error`` must not
+    propagate out of ``mask_secrets``.
+    """
+
+    def _raise_parser_error(_sql: str) -> None:
+        raise duckdb.Error("synthetic parse failure")
+
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.renderer.duckdb.extract_statements",
+        _raise_parser_error,
+    )
+
+    sql = "CREATE SECRET s (TYPE S3, SECRET 'topsecret')"
+
+    masked = mask_secrets(sql)
+
+    assert "SECRET ***" in masked
+    assert "topsecret" not in masked
 
 
 def test_ut_rd_005_null_values_are_displayed_as_null() -> None:

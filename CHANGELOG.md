@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Documented that chart cells cannot be detected in stored notebook data
+  at all: stored notebook format v3 does not record whether a cell was
+  displayed as a chart in DuckDB UI, so exported HTML always shows such
+  cells as ordinary SQL cells. The renderer's chart-fallback note is
+  therefore unreachable for notebooks read from `ui.db` and is only
+  exercised by programmatic callers that construct a `Cell` with
+  `cell_type="chart"` directly
+  ([#36](https://github.com/b-trout/duckdb-nb-export/issues/36)).
+
 ### Fixed
 
 - Stale `ui.db` snapshot directories left behind by a crashed or killed
@@ -14,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `open_ui_db` now opportunistically removes snapshot directories older
   than 24 hours before creating a new one
   ([#38](https://github.com/b-trout/duckdb-nb-export/issues/38)).
+- `mask_secrets` no longer corrupts multi-statement cells. Masking was
+  previously scoped to the whole cell text via `sql.find("(")` /
+  `sql.rfind(")")`, so a cell containing a `CREATE SECRET` statement
+  followed (or preceded) by other statements would silently drop or
+  mangle those other statements in the rendered HTML. Masking is now
+  scoped per statement using `duckdb.extract_statements`, and falls back
+  to the previous whole-text masking if statement splitting itself fails
+  ([#29](https://github.com/b-trout/duckdb-nb-export/issues/29)).
 
 ## [0.0.2] - 2026-07-06
 
