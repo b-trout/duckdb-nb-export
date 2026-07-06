@@ -245,7 +245,10 @@ on DuckDB `1.5.4` remain blocking.
 
 See design document section 2.1. Phase 1.5 adds a notebook-cell callable
 `export_notebook_html()` path after the target-database lock problem is
-resolved. Phase 2 targets client-side chart embedding and a C++ core.
+resolved. Phase 2 targets a C++ rendering core; client-side chart embedding
+is dormant because DuckDB UI does not persist chart settings (see
+Limitations), and will only be revisited if a future DuckDB UI version
+starts persisting them.
 
 ### Conventions
 
