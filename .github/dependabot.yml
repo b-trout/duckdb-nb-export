@@ -1,0 +1,44 @@
+version: 2
+
+updates:
+  # GitHub Actions are referenced by mutable tags (actions/checkout@v4,
+  # astral-sh/setup-uv@v5, pypa/gh-action-pypi-publish@release/v1, etc.) in
+  # every workflow under .github/workflows/. Nothing previously updated
+  # those pins, so a compromised or yanked upstream tag could go unnoticed
+  # indefinitely. Dependabot opens a PR whenever a referenced action has a
+  # newer release.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # Minor/patch action bumps are routine and low-risk; group them into
+      # one PR per week instead of one PR per action to cut down on review
+      # noise. Major bumps (potentially breaking) still get their own PR.
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # NOTE (tradeoff, see issue #63 and the final task report): as of this
+  # writing it is not certain whether Dependabot ships a dedicated "uv"
+  # package-ecosystem that understands uv.lock directly. To avoid guessing
+  # at unsupported YAML, this uses the well-documented "pip" ecosystem
+  # instead, which Dependabot supports for pyproject.toml-based projects
+  # (including PEP 621 projects managed by uv) and can also pick up
+  # uv.lock as a companion lockfile for version resolution. If GitHub adds
+  # (or already has, at a later Dependabot release) first-class "uv"
+  # support, prefer switching this entry to `package-ecosystem: "uv"` for
+  # more precise lockfile-aware updates.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # Same rationale as the github-actions group above: minor/patch
+      # dependency bumps are frequent and low-risk, so batch them into one
+      # PR per week rather than one PR per package.
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

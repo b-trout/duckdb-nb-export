@@ -48,6 +48,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actual paths is now emitted on stderr before the file is written
   ([#35](https://github.com/b-trout/duckdb-nb-export/issues/35)).
 
+### Added
+
+- `.github/dependabot.yml` now proposes weekly update PRs for GitHub
+  Actions pins and Python dependencies (grouped by minor/patch to reduce
+  PR noise); previously nothing updated action tags or `uv.lock`
+  automatically. The Python ecosystem entry uses Dependabot's `pip`
+  ecosystem rather than a dedicated `uv` ecosystem, since first-class
+  uv-lockfile support in Dependabot was not confirmed at the time of
+  writing; see the comment in `dependabot.yml` for the tradeoff.
+- `.github/workflows/pip-audit-watch.yml` runs `pip-audit` on a weekly
+  schedule (mirroring `assumption-watch.yml`'s pattern) and files or
+  updates a `dependency-vulnerability`-labeled GitHub issue on failure.
+  Previously `pip-audit` only ran as a pre-commit hook inside CI's lint
+  job, so a newly disclosed vulnerability produced no signal at all
+  during idle periods with no pull request activity
+  ([#63](https://github.com/b-trout/duckdb-nb-export/issues/63)).
+
 ### Changed
 
 - **Breaking:** `--nb-version` now rejects a non-integer value at the
