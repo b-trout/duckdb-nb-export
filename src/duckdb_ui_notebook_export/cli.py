@@ -22,6 +22,7 @@ and orchestration across the reader, executor, and renderer layers.
 """
 
 import argparse
+import math
 import re
 import sys
 from collections.abc import Iterable
@@ -290,7 +291,12 @@ def _utc_now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _cell_error_exit_required(report: ExecutionReport, *, stop_on_error: bool) -> bool:
+def _cell_error_exit_required(
+    report: ExecutionReport,
+    *,
+    stop_on_error: bool,
+    no_fail_on_cell_error: bool,
+) -> bool:
     """Return whether execution results should map to cell-error exit code.
 
     Parameters
@@ -298,20 +304,34 @@ def _cell_error_exit_required(report: ExecutionReport, *, stop_on_error: bool) -
     report
         Notebook execution report.
     stop_on_error
-        Whether CLI execution requested early stop on cell failure.
+        Whether CLI execution requested early stop on cell failure. This no
+        longer changes the exit-code outcome (any non-OK cell result already
+        triggers ``ExitCode.CELL_ERROR`` by default); it is accepted for
+        backward-compatible call signatures and documentation purposes only.
+    no_fail_on_cell_error
+        Whether ``--no-fail-on-cell-error`` was passed, restoring the
+        pre-#33 behavior of exiting 0 despite plain cell failures.
 
     Returns
     -------
     bool
         True when the CLI should return ``ExitCode.CELL_ERROR``.
+
+    Notes
+    -----
+    Timeouts and abandoned execution always require ``ExitCode.CELL_ERROR``,
+    even with ``--no-fail-on-cell-error``. Without that flag, any cell
+    result that is not ``CellStatus.OK`` also requires ``ExitCode.CELL_ERROR``
+    by default (issue #33).
     """
+    del stop_on_error
     if report.abandoned:
         return True
     if any(result.status is CellStatus.TIMEOUT for result in report.cell_results):
         return True
-    if stop_on_error:
-        return any(result.status is not CellStatus.OK for result in report.cell_results)
-    return False
+    if no_fail_on_cell_error:
+        return False
+    return any(result.status is not CellStatus.OK for result in report.cell_results)
 
 
 def _write_html(path: Path, html: str) -> None:
@@ -331,6 +351,64 @@ def _write_html(path: Path, html: str) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")
+
+
+def _positive_int_arg(value: str) -> int:
+    """Parse and validate an argparse integer argument that must be positive.
+
+    Parameters
+    ----------
+    value
+        Raw command-line argument text.
+
+    Returns
+    -------
+    int
+        Parsed integer value.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        Raised when ``value`` is not an integer, or is less than 1.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        message = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(message) from error
+    if parsed < 1:
+        message = f"must be a positive integer (>= 1), got {value!r}"
+        raise argparse.ArgumentTypeError(message)
+    return parsed
+
+
+def _positive_float_arg(value: str) -> float:
+    """Parse and validate an argparse float argument that must be positive.
+
+    Parameters
+    ----------
+    value
+        Raw command-line argument text.
+
+    Returns
+    -------
+    float
+        Parsed float value.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        Raised when ``value`` is not a finite float, or is not greater than 0.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        message = f"invalid float value: {value!r}"
+        raise argparse.ArgumentTypeError(message) from error
+    if not math.isfinite(parsed) or parsed <= 0:
+        message = f"must be a positive, finite number, got {value!r}"
+        raise argparse.ArgumentTypeError(message)
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -406,20 +484,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--max-rows",
-        type=int,
+        type=_positive_int_arg,
         default=1000,
         help="Maximum rows to render per cell (default: %(default)s).",
     )
     parser.add_argument(
         "--cell-timeout",
-        type=float,
+        type=_positive_float_arg,
         default=300.0,
         help="Per-cell execution timeout in seconds (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--interrupt-grace",
+        type=_positive_float_arg,
+        default=30.0,
+        help="Seconds to wait after a timeout interrupt before abandoning "
+        "execution (default: %(default)s).",
     )
     parser.add_argument(
         "--stop-on-error",
         action="store_true",
         help="Stop processing after the first cell error.",
+    )
+    parser.add_argument(
+        "--no-fail-on-cell-error",
+        action="store_true",
+        help="Exit 0 even when individual cells fail (previous default). "
+        "Timeouts and abandoned execution still exit 2.",
     )
     write_mode_group = parser.add_mutually_exclusive_group()
     write_mode_group.add_argument(
@@ -530,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
             read_only=args.read_only,
             max_rows=args.max_rows,
             cell_timeout=args.cell_timeout,
+            interrupt_grace=args.interrupt_grace,
             stop_on_error=args.stop_on_error,
             no_external_access=args.no_external_access,
         )
@@ -542,8 +634,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         html = render_html(notebook, report, metadata)
         final_output_path = dedupe_output_path(output_path)
+        if final_output_path != output_path:
+            _direct_stderr_logger().warning(
+                "output_path_deduplicated",
+                requested=str(output_path),
+                actual=str(final_output_path),
+            )
         _write_html(final_output_path, html)
-        if _cell_error_exit_required(report, stop_on_error=args.stop_on_error):
+        sys.stdout.write(f"{final_output_path}\n")
+        if _cell_error_exit_required(
+            report,
+            stop_on_error=args.stop_on_error,
+            no_fail_on_cell_error=args.no_fail_on_cell_error,
+        ):
             return int(ExitCode.CELL_ERROR)
         return int(ExitCode.OK)
     except (StorageVersionMismatchError, UiDbAccessError) as error:
@@ -554,13 +657,13 @@ def main(argv: list[str] | None = None) -> int:
         return int(ExitCode.OUTPUT_PATH_REJECTED)
     except TargetDatabaseError as error:
         LOGGER.error("target_database_missing", error=str(error))
-        return int(ExitCode.UI_DB_ACCESS_FAILED)
+        return int(ExitCode.EXECUTION_FAILED)
     except ExporterError as error:
-        LOGGER.error("export_failed", error=str(error))
-        return int(ExitCode.UI_DB_ACCESS_FAILED)
+        LOGGER.error("execution_failed", error=str(error))
+        return int(ExitCode.EXECUTION_FAILED)
     except (duckdb.Error, OSError) as error:
-        LOGGER.error("export_failed", error=str(error))
-        return int(ExitCode.UI_DB_ACCESS_FAILED)
+        LOGGER.error("execution_failed", error=str(error))
+        return int(ExitCode.EXECUTION_FAILED)
 
 
 if __name__ == "__main__":

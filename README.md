@@ -114,13 +114,24 @@ such as CSV or Parquet scans.
 `CREATE SECRET` parameter values are masked as `***` in rendered SQL. Secrets
 written in any other SQL form are not detected and will remain in the HTML.
 
+Masking only covers `CREATE SECRET` statement text; it does not cover every
+way a credential can end up in the exported HTML. Credentials embedded in
+other SQL forms are exported verbatim: for example, an
+`ATTACH 'postgres://user:password@host/db' AS pg;` cell renders its full
+connection string, password included, in the rendered SQL. Query *results*
+are never masked either: a cell such as `SELECT * FROM duckdb_secrets();`
+renders secret values as ordinary table cells, exposing them just like any
+other query output. Review the generated HTML before sharing it, and prefer
+DuckDB's Secrets Manager (`CREATE SECRET`, whose parameter values are masked)
+over inline credentials in `ATTACH` strings or other SQL wherever possible.
+
 If no target database is resolved, execution falls back to `:memory:` and emits
 a warning. DuckDB UI notebook JSON stores database names, not reliable file
 paths, so pass `--db <path>` for exports that depend on existing tables.
 
 `--db <path>` must point to an existing DuckDB database file (or `:memory:`,
 or a URI-style connect string such as `md:...`); a nonexistent local path is
-rejected with exit code 4 instead of silently creating an empty database
+rejected with exit code 6 instead of silently creating an empty database
 file, which usually means the path was mistyped.
 
 ### CLI reference
@@ -139,16 +150,22 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--nb-version` | Notebook version identifier to export. | Latest version |
 | `--list` | List notebooks and exit. | Off |
 | `--list-versions` | List versions for the selected notebook and exit. | Off |
-| `--max-rows` | Maximum rows to render per cell. | `1000` |
-| `--cell-timeout` | Per-cell execution timeout in seconds. | `300.0` |
+| `--max-rows` | Maximum rows to render per cell. Must be a positive integer (>= 1). | `1000` |
+| `--cell-timeout` | Per-cell execution timeout in seconds. Must be a positive, finite number. | `300.0` |
+| `--interrupt-grace` | Seconds to wait after a timeout interrupt before abandoning execution. Must be a positive, finite number. | `30.0` |
 | `--stop-on-error` | Stop processing after the first cell error. | Off |
+| `--no-fail-on-cell-error` | Exit 0 even when individual cells fail (previous default). Timeouts and abandoned execution still exit 2. | Off |
 | `--allow-writes` | Commit notebook changes instead of rolling them back. Mutually exclusive with `--read-only`. | Off |
 | `--read-only` | Open the target database in DuckDB read-only mode for a stronger no-writes guarantee. Cells that create or modify tables fail. Mutually exclusive with `--allow-writes`; cannot be combined with a `:memory:` target. | Off |
 | `--no-external-access` | Disable DuckDB external access during execution. | Off |
 | `--require-ui-closed` | Open `ui.db` directly and require DuckDB UI to be closed. | Off |
 | `--yes` | Skip the execution confirmation prompt. | Off |
 
-Existing output files are not overwritten; a numeric suffix is added.
+Existing output files are not overwritten; a numeric suffix is added. On
+success, the CLI prints the final output path (after any numeric-suffix
+deduplication) as a single line to stdout, so scripts can capture it
+directly; a renamed path also emits a warning naming the requested and
+actual paths on stderr.
 
 If `-o`/`--output` points outside the allowed base directory (the current
 directory by default, or the directory passed to `--output-dir`), the export
@@ -166,15 +183,21 @@ duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
 | ---: | --- |
 | 0 | Success. |
 | 1 | Notebook not found, or notebook name is ambiguous (use `--notebook-id`). |
-| 2 | Cell execution stopped because `--stop-on-error` was set, or a timeout interrupt failed and the export ended partially. |
+| 2 | One or more cells failed, timed out, or were skipped, or `--stop-on-error` stopped processing after the first cell error, or a timeout interrupt failed and the export ended partially. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
-| 4 | `ui.db` access or export setup failed, including lock, corruption, or storage-version mismatch. |
+| 4 | `ui.db` access failed, including lock, corruption, or storage-version mismatch. |
 | 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
+| 6 | Notebook execution or HTML writing failed, including a missing or unusable `--db` target. |
 
-Without `--stop-on-error`, a run that completes exits 0 even if individual
-cells failed; per-cell failures are reported in the rendered HTML and on
-stderr, not through the exit code. Use `--stop-on-error` if you need failure
-detection through the exit code, for example in CI.
+By default, the exit code fails (exit 2) whenever any cell result is not a
+plain success (`ERROR`, `SKIPPED_ABORT`, `REJECTED_TRANSACTION_STATEMENT`,
+`TIMEOUT`), or execution was abandoned after an uninterruptible timeout;
+`--stop-on-error` additionally stops processing early after the first cell
+error. Pass `--no-fail-on-cell-error` to restore the previous (pre-0.0.3)
+behavior of exiting 0 whenever the run completes despite per-cell failures,
+which are still reported in the rendered HTML and on stderr; timeouts and
+abandoned execution still exit 2 even with this flag, since those indicate
+the export itself did not run to completion as requested.
 
 ### Limitations
 

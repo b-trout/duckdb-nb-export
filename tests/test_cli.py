@@ -248,12 +248,20 @@ def test_ut_c_012_prompt_lists_all_cell_sql(
     assert "SELECT 2 AS second" in captured.out
 
 
-def test_ut_c_013_main_returns_ok_when_export_completes(
+def test_ut_c_013_main_returns_cell_error_when_a_cell_fails_by_default(
     synthetic_ui_db: Path,
     fresh_duckdb: Path,
     tmp_workdir: Path,
 ) -> None:
-    """UT-C-013: Returns exit code 0 when export completes."""
+    """UT-C-013: Returns exit code 2 by default when any cell result fails.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook includes a failing
+    ``SELECT * FROM missing_table`` cell. Since issue #33, the CLI exits
+    with ``ExitCode.CELL_ERROR`` by default whenever any cell result is not
+    ``CellStatus.OK``, without requiring ``--stop-on-error``.
+    """
     exit_code = main(
         [
             "Notebook",
@@ -267,7 +275,81 @@ def test_ut_c_013_main_returns_ok_when_export_completes(
         ]
     )
 
+    assert exit_code == ExitCode.CELL_ERROR
+
+
+def test_ut_c_033_no_fail_on_cell_error_restores_exit_zero(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-033: ``--no-fail-on-cell-error`` restores the previous exit 0.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook includes a plain ``ERROR``
+    cell. ``--no-fail-on-cell-error`` restores the pre-#33 behavior: exit 0
+    on completion despite the cell failure.
+
+    Traceability
+    ------------
+    Issue #33
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
     assert exit_code == ExitCode.OK
+
+
+def test_ut_c_034_no_fail_on_cell_error_still_fails_on_abandoned_report(
+    tmp_path: Path,
+) -> None:
+    """UT-C-034: ``--no-fail-on-cell-error`` still exits 2 when abandoned.
+
+    Notes
+    -----
+    ``report.abandoned`` and ``CellStatus.TIMEOUT`` results must still map
+    to ``ExitCode.CELL_ERROR`` even when ``--no-fail-on-cell-error`` is set;
+    only plain per-cell failures are forgiven by that flag.
+
+    Traceability
+    ------------
+    Issue #33
+    """
+    del tmp_path
+    report = ExecutionReport(
+        cell_results=[
+            CellResult(
+                status=CellStatus.OK,
+                columns=[],
+                rows=[],
+                truncated=False,
+                affected_rows=None,
+                error_message=None,
+            ),
+        ],
+        warnings=[],
+        used_memory_fallback=False,
+        abandoned=True,
+    )
+
+    assert (
+        _cell_error_exit_required(
+            report, stop_on_error=False, no_fail_on_cell_error=True
+        )
+        is True
+    )
 
 
 def test_ut_c_014_main_returns_notebook_not_found_for_missing_name(
@@ -352,21 +434,21 @@ def test_ut_c_016_main_returns_cell_error_and_partial_html_on_hard_timeout(
     assert output.exists()
 
 
-def test_ut_c_028_main_returns_ui_db_access_failed_for_missing_target_db(
+def test_ut_c_028_main_returns_execution_failed_for_missing_target_db(
     synthetic_ui_db: Path,
     tmp_workdir: Path,
 ) -> None:
-    """UT-C-028: A mistyped ``--db`` maps to exit code 4, no file created.
+    """UT-C-028: A mistyped ``--db`` maps to exit code 6, no file created.
 
     Notes
     -----
-    A dedicated exit code is deferred to a later issue; for now this maps
-    to ``ExitCode.UI_DB_ACCESS_FAILED`` with a ``target_database_missing``
-    log event.
+    ``TargetDatabaseError`` maps to ``ExitCode.EXECUTION_FAILED`` with a
+    ``target_database_missing`` log event, distinct from ui.db access
+    failures.
 
     Traceability
     ------------
-    Issue #30
+    Issue #30, #34
     """
     missing_db = tmp_workdir / "typo.duckdb"
 
@@ -383,8 +465,44 @@ def test_ut_c_028_main_returns_ui_db_access_failed_for_missing_target_db(
         ]
     )
 
-    assert exit_code == ExitCode.UI_DB_ACCESS_FAILED
+    assert exit_code == ExitCode.EXECUTION_FAILED
     assert not missing_db.exists()
+
+
+def test_ut_c_032_main_returns_execution_failed_when_html_writing_fails(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-032: An HTML write failure maps to exit code 6, not 4.
+
+    Traceability
+    ------------
+    Issue #34
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_os_error(path: Path, html: str) -> None:
+        del path, html
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_module, "_write_html", _raise_os_error)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.EXECUTION_FAILED
 
 
 def test_ut_c_029_read_only_and_allow_writes_are_mutually_exclusive(
@@ -422,11 +540,18 @@ def test_ut_c_030_read_only_flag_is_passed_to_executor(
     fresh_duckdb: Path,
     tmp_workdir: Path,
 ) -> None:
-    """UT-C-030: ``--read-only`` completes the export with exit code 0.
+    """UT-C-030: ``--read-only`` completes the export normally.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook includes a failing cell, so
+    since issue #33 the CLI exits with ``ExitCode.CELL_ERROR`` by default;
+    this test asserts the export still completes (rather than crashing)
+    under ``--read-only``.
 
     Traceability
     ------------
-    Issue #31
+    Issue #31, #33
     """
     exit_code = main(
         [
@@ -442,7 +567,7 @@ def test_ut_c_030_read_only_flag_is_passed_to_executor(
         ]
     )
 
-    assert exit_code == ExitCode.OK
+    assert exit_code == ExitCode.CELL_ERROR
 
 
 def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
@@ -455,11 +580,13 @@ def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
     Before the issue #32 fix, an error that aborted the transaction still
     hit a final ``COMMIT`` on an aborted transaction; here it is asserted
     end to end through the CLI: the export completes (writes an HTML file)
-    and the target database file shows no committed table afterward.
+    and the target database file shows no committed table afterward. Since
+    issue #33, the CLI exits with ``ExitCode.CELL_ERROR`` by default because
+    the notebook includes a failing cell.
 
     Traceability
     ------------
-    Issue #32
+    Issue #32, #33
     """
     from tests.helpers.synthetic_ui_db import build_ui_db
 
@@ -498,7 +625,7 @@ def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
         ]
     )
 
-    assert exit_code == ExitCode.OK
+    assert exit_code == ExitCode.CELL_ERROR
     assert (tmp_workdir / "out.html").exists()
 
     with duckdb.connect(str(target_db)) as connection:
@@ -544,7 +671,12 @@ def test_ut_c_027_abandoned_report_requires_cell_error_exit(tmp_path: Path) -> N
         abandoned=True,
     )
 
-    assert _cell_error_exit_required(report, stop_on_error=False) is True
+    assert (
+        _cell_error_exit_required(
+            report, stop_on_error=False, no_fail_on_cell_error=False
+        )
+        is True
+    )
 
 
 def test_ut_c_022_default_output_path_uses_notebook_name(
@@ -738,3 +870,217 @@ def test_ut_c_023_main_notebook_id_exports_duplicate_name_without_positional(
 
     assert exit_code == ExitCode.OK
     assert (tmp_workdir / "out.html").exists()
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_ut_c_035_max_rows_rejects_non_positive_values(
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-035: ``--max-rows`` rejects zero and negative values.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--max-rows", value, "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--max-rows" in captured.err
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_ut_c_036_cell_timeout_rejects_non_positive_values(
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-036: ``--cell-timeout`` rejects zero and negative values.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--cell-timeout", value, "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--cell-timeout" in captured.err
+
+
+def test_ut_c_037_interrupt_grace_rejects_non_positive_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-037: ``--interrupt-grace`` rejects zero (and non-positive values).
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--interrupt-grace", "0", "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--interrupt-grace" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--max-rows", "1"),
+        ("--max-rows", "500"),
+        ("--cell-timeout", "0.1"),
+        ("--cell-timeout", "300"),
+        ("--interrupt-grace", "0.1"),
+        ("--interrupt-grace", "30"),
+    ],
+)
+def test_ut_c_038_numeric_validators_accept_valid_values(
+    flag: str,
+    value: str,
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-038: Valid ``--max-rows``/``--cell-timeout``/``--interrupt-grace``
+    values are accepted and the export still completes.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            flag,
+            value,
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+
+
+def test_ut_c_039_interrupt_grace_reaches_execute_notebook(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-039: ``--interrupt-grace`` is forwarded to ``execute_notebook``.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    captured_kwargs: dict[str, object] = {}
+    original_execute_notebook = cli_module.execute_notebook
+
+    def _capture_execute_notebook(notebook, db, **kwargs):
+        captured_kwargs.update(kwargs)
+        return original_execute_notebook(notebook, db, **kwargs)
+
+    monkeypatch.setattr(cli_module, "execute_notebook", _capture_execute_notebook)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--interrupt-grace",
+            "12.5",
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    assert captured_kwargs["interrupt_grace"] == 12.5
+
+
+def test_ut_c_040_main_prints_final_output_path_on_success(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-040: A successful export prints exactly the final path to stdout.
+
+    Traceability
+    ------------
+    Issue #35
+    """
+    output = tmp_workdir / "out.html"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{output}\n"
+
+
+def test_ut_c_041_main_warns_and_prints_deduped_path_when_target_exists(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-041: Prints the deduped path and warns on stderr before writing.
+
+    Traceability
+    ------------
+    Issue #35
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+    deduped = tmp_workdir / "out-1.html"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{deduped}\n"
+    assert "output_path_deduplicated" in captured.err
+    assert str(output) in captured.err
+    assert str(deduped) in captured.err
+    assert deduped.exists()

@@ -18,9 +18,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because some analytics notebooks create intermediate tables that are
   expected to be rolled back
   ([#31](https://github.com/b-trout/duckdb-nb-export/issues/31)).
+- `--interrupt-grace` exposes the seconds to wait after a timeout interrupt
+  before abandoning execution, previously only reachable programmatically
+  through `execute_notebook`'s `interrupt_grace` parameter (default: `30.0`,
+  unchanged)
+  ([#37](https://github.com/b-trout/duckdb-nb-export/issues/37)).
+- On success, the CLI now prints the final output path (after any
+  numeric-suffix deduplication) as a single line to stdout, so scripts can
+  capture it without re-deriving it from `-o`/`--output-dir`. When the
+  requested path already exists and a numeric suffix is applied, a
+  structured `output_path_deduplicated` warning naming the requested and
+  actual paths is now emitted on stderr before the file is written
+  ([#35](https://github.com/b-trout/duckdb-nb-export/issues/35)).
 
 ### Changed
 
+- `--max-rows` and `--cell-timeout` now reject non-positive values
+  (`--max-rows` must be an integer >= 1; `--cell-timeout` and
+  `--interrupt-grace` must be positive, finite numbers) with a clear
+  argparse error instead of silently accepting values such as `0` or a
+  negative number that would otherwise produce confusing downstream
+  behavior
+  ([#37](https://github.com/b-trout/duckdb-nb-export/issues/37)).
+- **Breaking:** The exit code now fails by default whenever any notebook
+  cell result is not a plain success. Previously, without
+  `--stop-on-error`, a run that completed exited 0 even if individual
+  cells returned `ERROR`, `SKIPPED_ABORT`, or
+  `REJECTED_TRANSACTION_STATEMENT` (only `TIMEOUT` and abandoned execution
+  already failed the exit code); this made it easy to miss cell failures
+  in automated pipelines that only check the process exit code. The CLI
+  now returns `ExitCode.CELL_ERROR` (2) whenever any cell result is not
+  `CellStatus.OK`, or `report.abandoned` is true, without requiring
+  `--stop-on-error`. Pass the new `--no-fail-on-cell-error` flag to
+  restore the previous behavior (exit 0 despite per-cell failures;
+  timeouts and abandoned execution still exit 2). This project is still
+  alpha (0.0.x); the change is called out here because it affects
+  CI/automation exit-code checks
+  ([#33](https://github.com/b-trout/duckdb-nb-export/issues/33)).
+- Execution-phase failures (notebook re-execution or HTML writing) now exit
+  with a dedicated exit code 6 instead of exit code 4. Exit code 4 is now
+  reserved strictly for `ui.db` access failures (lock, corruption, or
+  storage-version mismatch); a missing or unusable `--db` target, or a
+  failure while writing the output HTML, previously returned the same exit
+  code 4 as a `ui.db` access failure even though the cause was unrelated to
+  `ui.db`
+  ([#34](https://github.com/b-trout/duckdb-nb-export/issues/34)).
+- Documented that `CREATE SECRET` masking does not cover every way a
+  credential can leak into the exported HTML: connection strings embedded
+  in other SQL forms (for example `ATTACH 'postgres://user:password@host/db'
+  AS pg;`) are exported verbatim, and query results that expose secret
+  values (for example `SELECT * FROM duckdb_secrets();`) are rendered as
+  ordinary table cells with no masking. Recommend reviewing exported HTML
+  before sharing it and preferring `CREATE SECRET` over inline credentials
+  ([#39](https://github.com/b-trout/duckdb-nb-export/issues/39)).
 - Documented that chart cells cannot be detected in stored notebook data
   at all: stored notebook format v3 does not record whether a cell was
   displayed as a chart in DuckDB UI, so exported HTML always shows such
@@ -54,7 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#28](https://github.com/b-trout/duckdb-nb-export/issues/28)).
 - A mistyped `--db` path no longer silently creates a new, empty DuckDB
   database file. `execute_notebook` now rejects a plain local `--db` path
-  that does not already exist with a clear error (exit code 4) before
+  that does not already exist with a clear error (exit code 6) before
   connecting, instead of producing an error-filled HTML export with exit
   code 0. `:memory:` and URI-style connect strings (for example `md:...`,
   `s3://...`) are unaffected
