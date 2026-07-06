@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--version` flag printing the tool version and the DuckDB version in
+  use, then exiting 0
+  ([#53](https://github.com/b-trout/duckdb-nb-export/issues/53)).
+- `--json` flag for `--list` and `--list-versions`: prints exactly one
+  JSON array on stdout (`{"name", "notebook_id", "updated_at"}` for
+  `--list`; `{"version_id", "created_at"}` for `--list-versions`) with
+  ISO-8601 timestamps, so scripts can parse listings without scraping the
+  table. `--json` without one of those flags is an argparse error (exit 2)
+  ([#54](https://github.com/b-trout/duckdb-nb-export/issues/54)).
+- `--force` flag to overwrite the output file if it exists instead of
+  writing to a numeric-suffixed sibling path. The default
+  (dedupe-suffixing, never overwriting) is unchanged; with `--force` no
+  dedupe warning is emitted since the requested path is used as-is
+  ([#52](https://github.com/b-trout/duckdb-nb-export/issues/52)).
+- `-q`/`--quiet` and `-v`/`--verbose` flags to control log verbosity on
+  stderr: `--quiet` raises the threshold to `ERROR` only, `--verbose`
+  lowers it to `DEBUG`, and the default remains `INFO`. The two flags are
+  mutually exclusive
+  ([#55](https://github.com/b-trout/duckdb-nb-export/issues/55)).
 - The exported HTML footer now records the target database and write mode
   used for the export, alongside the existing timestamp/version fields.
   The target database line shows a privacy-safe display form only:
@@ -73,6 +92,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The human-readable `--list` and `--list-versions` tables now pad each
+  column to the width of its widest value (instead of tab separation) and
+  render timestamps at seconds precision without microseconds
+  ([#54](https://github.com/b-trout/duckdb-nb-export/issues/54)).
+- The execution confirmation prompt now shows a compact header naming the
+  notebook, version, cell count, target database, write mode, and output
+  path, and previews each cell as a `CREATE SECRET`-masked excerpt (first
+  two non-empty lines, up to 160 characters) instead of dumping every
+  cell's full raw SQL. URI-style target databases are displayed as their
+  scheme only (for example `md: (URI)`) because URIs can embed
+  credentials. The target database is now resolved before the prompt so
+  it can be named there
+  ([#50](https://github.com/b-trout/duckdb-nb-export/issues/50)).
 - **Breaking:** `--nb-version` now rejects a non-integer value at the
   argument-parsing stage (exit code 2) instead of reaching the reader and
   failing with a `ui.db access failed` message (exit code 4). An unknown
@@ -189,6 +221,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `db == ":memory:"` and warned even when `:memory:` was requested
   explicitly rather than being a fallback
   ([#49](https://github.com/b-trout/duckdb-nb-export/issues/49)).
+- The output HTML is now written atomically and the deduplicated name is
+  reserved race-free. The document is staged in a temporary file in the
+  destination directory and moved into place with `os.replace`, so a
+  reader never observes a partially written export; the numeric-suffix
+  dedupe now reserves each candidate name with a create-exclusive open
+  instead of an `exists()` probe, closing the window where a concurrent
+  export could claim the same path. A failure between reservation and
+  write removes both the temporary file and the empty reservation
+  ([#62](https://github.com/b-trout/duckdb-nb-export/issues/62)).
+- EOF (Ctrl-D) at the execution confirmation prompt now declines the
+  confirmation and exits 5 (`CONFIRMATION_DECLINED`), the same as
+  answering "n"; previously the `EOFError` escaped as a raw traceback
+  with exit code 1, colliding with `NOTEBOOK_NOT_FOUND`. Ctrl-C at the
+  prompt or anywhere during the export now logs a single short
+  `interrupted` error event (no traceback) and exits with the new
+  dedicated code 130 (`128 + SIGINT`)
+  ([#45](https://github.com/b-trout/duckdb-nb-export/issues/45)).
+- Cell failures are no longer silent on stderr. Previously a failing cell
+  produced exit code 2 with no on-screen indication of what failed, even
+  though README already claimed stderr reporting. The CLI now logs a
+  `cell_failed` event per non-OK cell result (1-based cell index, status,
+  and a truncated error message) plus a `cells_failed_summary` event
+  naming the output path, both before the process exits; this happens
+  whenever a cell fails, including under `--no-fail-on-cell-error` (which
+  still exits 0)
+  ([#44](https://github.com/b-trout/duckdb-nb-export/issues/44)).
+- The `notebook_name_sanitized_for_output` warning no longer fires for
+  every notebook name that merely contains a space. Only names that need
+  more than whitespace-to-underscore substitution (for example a path
+  separator like `/` or `\`, or a colon `:`) now emit the warning; a name
+  like `Untitled Notebook` silently becomes `Untitled_Notebook.html` as
+  before, without a spurious warning on every export
+  ([#47](https://github.com/b-trout/duckdb-nb-export/issues/47)).
+- Log output no longer emits ANSI color escape codes when stderr is not a
+  terminal (for example when piped or redirected to a file), and the
+  `NO_COLOR` environment variable (any value, including an empty string,
+  per [no-color.org](https://no-color.org/)) now disables color output even
+  when stderr is a terminal. Previously `structlog`'s `ConsoleRenderer` always
+  emitted color codes regardless of the output stream or `NO_COLOR`
+  ([#46](https://github.com/b-trout/duckdb-nb-export/issues/46)).
 - Stale `ui.db` snapshot directories left behind by a crashed or killed
   process no longer accumulate indefinitely: each snapshot-path call to
   `open_ui_db` now opportunistically removes snapshot directories older

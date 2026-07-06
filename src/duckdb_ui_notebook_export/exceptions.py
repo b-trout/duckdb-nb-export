@@ -255,6 +255,8 @@ class ExitCode(enum.IntEnum):
     Notes
     -----
     The numeric values mirror the design document CLI contract.
+    ``INTERRUPTED`` follows the shell convention of ``128 + SIGINT`` (130)
+    for a process ended by Ctrl-C.
     """
 
     OK = 0
@@ -264,3 +266,4 @@ class ExitCode(enum.IntEnum):
     UI_DB_ACCESS_FAILED = 4
     CONFIRMATION_DECLINED = 5
     EXECUTION_FAILED = 6
+    INTERRUPTED = 130

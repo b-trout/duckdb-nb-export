@@ -16,10 +16,13 @@ None
     Importing this module should not raise package-specific exceptions.
 """
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+import structlog
 
+from duckdb_ui_notebook_export import _logging
 from duckdb_ui_notebook_export.cli import (
     _cell_error_exit_required,
     _write_mode_display,
@@ -32,6 +35,29 @@ from duckdb_ui_notebook_export.cli import (
 from duckdb_ui_notebook_export.exceptions import ExitCode, OutputPathError
 from duckdb_ui_notebook_export.executor import CellResult, CellStatus, ExecutionReport
 from duckdb_ui_notebook_export.models import Cell
+
+
+@pytest.fixture(autouse=True)
+def _reset_logging_state() -> Generator[None]:
+    """Reset structlog global configuration around every CLI test.
+
+    Returns
+    -------
+    None
+        The module's ``_CONFIGURED`` flag and structlog's global
+        configuration are reset before and after each test.
+
+    Notes
+    -----
+    ``main`` calls ``configure_logging`` with ``force=True`` using the
+    parsed ``-q``/``-v`` level, so tests that assert on log level filtering
+    or on rendered log output must not leak configuration between cases.
+    """
+    _logging.reset_for_testing()
+    structlog.reset_defaults()
+    yield
+    _logging.reset_for_testing()
+    structlog.reset_defaults()
 
 
 def _sql_cell(sql: str) -> dict[str, str]:
@@ -186,6 +212,66 @@ def test_ut_c_008_sanitized_default_name_emits_warning(
     assert "Sales_Cost" in captured.err
 
 
+def test_ut_c_048_space_only_sanitized_name_does_not_warn(
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-048: A whitespace-only substitution does not emit a warning.
+
+    Notes
+    -----
+    Spaces in notebook names are normal and expected to become underscores
+    in the output filename; warning on every such name is noise. Only
+    sanitization beyond whitespace-to-underscore substitution (path
+    separators, colons) should warn.
+
+    Traceability
+    ------------
+    Issue #47
+    """
+    output = resolve_output_path(None, "Untitled Notebook", None)
+
+    captured = capsys.readouterr()
+    assert output == tmp_workdir / "Untitled_Notebook.html"
+    assert captured.err == ""
+
+
+def test_ut_c_049_path_separator_in_name_still_warns(
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-049: A path separator in the notebook name still warns.
+
+    Traceability
+    ------------
+    Issue #47
+    """
+    output = resolve_output_path(None, "a/b Notebook", None)
+
+    captured = capsys.readouterr()
+    assert output == tmp_workdir / "a_b_Notebook.html"
+    assert "notebook_name_sanitized_for_output" in captured.err
+    assert "a/b Notebook" in captured.err
+
+
+def test_ut_c_050_colon_in_name_still_warns(
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-050: A colon in the notebook name still warns.
+
+    Traceability
+    ------------
+    Issue #47
+    """
+    output = resolve_output_path(None, "a:b", None)
+
+    captured = capsys.readouterr()
+    assert output == tmp_workdir / "a_b.html"
+    assert "notebook_name_sanitized_for_output" in captured.err
+    assert "a:b" in captured.err
+
+
 def test_ut_c_009_output_dir_becomes_allowed_base(
     tmp_workdir: Path,
     tmp_path: Path,
@@ -202,6 +288,39 @@ def test_ut_c_009_output_dir_becomes_allowed_base(
         resolve_output_path(str(outside), "Notebook", str(output_dir))
 
 
+def _confirm(
+    cells: list[Cell],
+    *,
+    assume_yes: bool,
+    **overrides: object,
+) -> bool:
+    """Call ``confirm_execution`` with default header facts.
+
+    Parameters
+    ----------
+    cells
+        Cells forwarded to ``confirm_execution``.
+    assume_yes
+        Whether confirmation should be skipped.
+    **overrides
+        Header keyword arguments overriding the test defaults.
+
+    Returns
+    -------
+    bool
+        Result of ``confirm_execution``.
+    """
+    kwargs: dict[str, object] = {
+        "target_db_display": ":memory:",
+        "write_mode": "rollback (default)",
+        "output_path": Path("exports/out.html"),
+        "notebook_name": "Notebook",
+        "version_id": "v1",
+    }
+    kwargs.update(overrides)
+    return confirm_execution(cells, assume_yes=assume_yes, **kwargs)  # type: ignore[arg-type]
+
+
 def test_ut_c_010_non_tty_confirmation_declines_without_prompt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -209,7 +328,7 @@ def test_ut_c_010_non_tty_confirmation_declines_without_prompt(
     """UT-C-010: Declines in non-TTY mode without prompting."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
-    confirmed = confirm_execution([Cell(sql="SELECT 1")], assume_yes=False)
+    confirmed = _confirm([Cell(sql="SELECT 1")], assume_yes=False)
 
     captured = capsys.readouterr()
     assert confirmed is False
@@ -223,7 +342,7 @@ def test_ut_c_011_assume_yes_skips_confirmation(
     """UT-C-011: Confirms immediately when ``--yes`` is used."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
-    confirmed = confirm_execution([Cell(sql="SELECT 1")], assume_yes=True)
+    confirmed = _confirm([Cell(sql="SELECT 1")], assume_yes=True)
 
     captured = capsys.readouterr()
     assert confirmed is True
@@ -234,11 +353,11 @@ def test_ut_c_012_prompt_lists_all_cell_sql(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """UT-C-012: Shows every cell SQL body in the confirmation prompt."""
+    """UT-C-012: Shows every (short) cell SQL body in the confirmation prompt."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "y")
 
-    confirmed = confirm_execution(
+    confirmed = _confirm(
         [Cell(sql="SELECT 1 AS first"), Cell(sql="SELECT 2 AS second")],
         assume_yes=False,
     )
@@ -247,6 +366,156 @@ def test_ut_c_012_prompt_lists_all_cell_sql(
     assert confirmed is True
     assert "SELECT 1 AS first" in captured.out
     assert "SELECT 2 AS second" in captured.out
+
+
+def test_ut_c_058_prompt_header_shows_execution_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-058: The prompt header names all six execution facts.
+
+    Notes
+    -----
+    Notebook name, version, cell count, target database, write mode, and
+    output path must all be visible before the user answers.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    _confirm(
+        [Cell(sql="SELECT 1"), Cell(sql="SELECT 2")],
+        assume_yes=False,
+        notebook_name="Sales Report",
+        version_id="v42",
+        target_db_display="/data/sales.duckdb",
+        write_mode="rollback (default)",
+        output_path=Path("/exports/Sales_Report.html"),
+    )
+
+    captured = capsys.readouterr()
+    assert "Sales Report" in captured.out
+    assert "v42" in captured.out
+    assert "2" in captured.out
+    assert "/data/sales.duckdb" in captured.out
+    assert "rollback (default)" in captured.out
+    assert "/exports/Sales_Report.html" in captured.out
+
+
+def test_ut_c_059_prompt_masks_create_secret_values(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-059: CREATE SECRET parameter values never appear in the prompt.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    sql = (
+        "CREATE SECRET my_secret (TYPE S3, KEY_ID 'AKIAXXXX', "
+        "SECRET 'supersecretvalue')"
+    )
+    _confirm([Cell(sql=sql)], assume_yes=False)
+
+    captured = capsys.readouterr()
+    assert "supersecretvalue" not in captured.out
+    assert "AKIAXXXX" not in captured.out
+    assert "CREATE SECRET" in captured.out
+
+
+def test_ut_c_060_prompt_truncates_long_cell_sql(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-060: Long cell SQL is truncated to two lines and 160 chars.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    long_line = "SELECT " + ", ".join(f"col_{i}" for i in range(60))
+    multi_line = "SELECT 1\n\nSELECT 2\nSELECT 3_hidden_line"
+
+    _confirm(
+        [Cell(sql=long_line), Cell(sql=multi_line)],
+        assume_yes=False,
+    )
+
+    captured = capsys.readouterr()
+    assert long_line not in captured.out
+    assert "…" in captured.out
+    assert "3_hidden_line" not in captured.out
+    assert "SELECT 1" in captured.out
+    assert "SELECT 2" in captured.out
+
+
+def test_ut_c_061_target_db_display_hides_uri_details() -> None:
+    """UT-C-061: URI-style targets display as scheme only; paths as given.
+
+    Notes
+    -----
+    URI connect strings can embed credentials
+    (``postgres://user:password@host/db``), so only the scheme is shown.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    from duckdb_ui_notebook_export.cli import _target_db_display
+
+    assert _target_db_display(":memory:") == ":memory:"
+    assert _target_db_display("md:my_db") == "md: (URI)"
+    assert _target_db_display("postgres://user:password@host/db") == "postgres: (URI)"
+    assert _target_db_display("/data/sales.duckdb") == "/data/sales.duckdb"
+
+
+def test_ut_c_062_main_prompt_shows_target_db_before_confirmation(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-062: The target database is resolved before the prompt is shown.
+
+    Notes
+    -----
+    ``resolve_target_db`` must run before ``confirm_execution`` so the
+    prompt can name the database that will actually be used.
+
+    Traceability
+    ------------
+    Issue #50
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.CONFIRMATION_DECLINED
+    assert str(fresh_duckdb) in captured.out
+    assert str(tmp_workdir / "out.html") in captured.out
 
 
 def test_ut_c_013_main_returns_cell_error_when_a_cell_fails_by_default(
@@ -1246,3 +1515,829 @@ def test_ut_c_043_nb_version_unknown_version_returns_notebook_not_found(
     )
 
     assert exit_code == ExitCode.NOTEBOOK_NOT_FOUND
+
+
+def test_ut_c_042_quiet_suppresses_info_and_warning_events(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-042: ``--quiet`` suppresses INFO/WARNING but not ERROR events.
+
+    Notes
+    -----
+    The fixture notebook's failing cell triggers a warning-level
+    ``notebook_name_sanitized_for_output``-style deduplication path is not
+    used here; instead this test exercises the always-present
+    ``output_path_deduplicated`` WARNING event and confirms it is
+    suppressed under ``--quiet`` while an ERROR-level event used elsewhere
+    in the CLI (``notebook_not_found``) still reaches stderr.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "output_path_deduplicated" not in captured.err
+
+
+def test_ut_c_043_quiet_still_shows_error_events(
+    synthetic_ui_db: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-043: ``--quiet`` still allows ERROR-level events on stderr.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    exit_code = main(
+        [
+            "Missing Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.NOTEBOOK_NOT_FOUND
+    assert "notebook_not_found" in captured.err
+
+
+def test_ut_c_044_verbose_shows_debug_events(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-044: ``--verbose`` lowers the threshold to DEBUG.
+
+    Notes
+    -----
+    Emits a DEBUG-level event directly through the shared logger (as a
+    stand-in for future DEBUG instrumentation) and asserts it is rendered
+    only once ``--verbose`` is active, proving the CLI wires the flag
+    through to ``configure_logging``.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    from duckdb_ui_notebook_export import _logging as logging_module
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--no-fail-on-cell-error",
+            "--yes",
+            "--verbose",
+        ]
+    )
+    logging_module.get_logger().debug("debug_probe_event")
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "debug_probe_event" in captured.err
+
+
+def test_ut_c_045_verbose_and_quiet_are_mutually_exclusive(
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-045: ``-q`` and ``-v`` cannot both be set.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "Notebook",
+                "--output",
+                str(tmp_workdir / "out.html"),
+                "--quiet",
+                "--verbose",
+                "--yes",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_ut_c_046_help_documents_quiet_and_verbose(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-046: ``--help`` documents both ``-q/--quiet`` and ``-v/--verbose``.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "-q" in captured.out
+    assert "--quiet" in captured.out
+    assert "-v" in captured.out
+    assert "--verbose" in captured.out
+
+
+def test_ut_c_047_default_level_shows_info_and_warning(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-047: Without ``-q``/``-v``, WARNING events still reach stderr.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "output_path_deduplicated" in captured.err
+
+
+@pytest.fixture
+def green_synthetic_ui_db(tmp_path: Path) -> Path:
+    """Build a synthetic ui.db whose only notebook has no failing cells.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to a generated ui.db file.
+    """
+    from tests.helpers.synthetic_ui_db import build_ui_db
+
+    try:
+        return build_ui_db(
+            [
+                _notebook_spec(
+                    "Notebook",
+                    _sql_cell("SELECT 1"),
+                    _sql_cell("SELECT 2"),
+                )
+            ],
+            tmp_path,
+        )
+    except NotImplementedError as error:
+        pytest.skip(str(error))
+
+
+def test_ut_c_051_cell_failure_reports_error_message_on_stderr(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-051: A failing cell's error message reaches stderr, exit code 2.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook's second cell (1-based index 2)
+    is ``SELECT * FROM missing_table``, which fails with a
+    "missing_table"-mentioning error. The CLI must log a ``cell_failed``
+    event naming the cell index and status, plus a summary event, before
+    returning ``ExitCode.CELL_ERROR``.
+
+    Traceability
+    ------------
+    Issue #44
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.CELL_ERROR
+    assert "cell_failed" in captured.err
+    assert "missing_table" in captured.err
+    assert "cells_failed_summary" in captured.err
+    assert str(tmp_workdir / "out.html") in captured.err
+
+
+def test_ut_c_052_green_notebook_emits_no_cell_failure_events(
+    green_synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-052: A fully-green notebook emits no cell-failure stderr events.
+
+    Traceability
+    ------------
+    Issue #44
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(green_synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "cell_failed" not in captured.err
+    assert "cells_failed_summary" not in captured.err
+
+
+def test_ut_c_053_no_fail_on_cell_error_still_reports_but_exits_zero(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-053: ``--no-fail-on-cell-error`` still reports, but exits 0.
+
+    Traceability
+    ------------
+    Issue #44
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "cell_failed" in captured.err
+    assert "missing_table" in captured.err
+    assert "cells_failed_summary" in captured.err
+
+
+def test_ut_c_054_version_flag_prints_tool_and_duckdb_versions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-054: ``--version`` prints tool and DuckDB versions, exits 0.
+
+    Traceability
+    ------------
+    Issue #53
+    """
+    import duckdb
+
+    from duckdb_ui_notebook_export import __version__
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert __version__ in captured.out
+    assert duckdb.__version__ in captured.out
+    assert "duckdb-nb-export" in captured.out
+
+
+def test_ut_c_055_eof_at_confirmation_prompt_declines(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-055: EOF at the confirmation prompt maps to exit code 5.
+
+    Notes
+    -----
+    Previously ``EOFError`` from ``input()`` escaped ``main`` as a raw
+    traceback with exit code 1, colliding with ``NOTEBOOK_NOT_FOUND``.
+
+    Traceability
+    ------------
+    Issue #45
+    """
+
+    def _raise_eof(prompt: str) -> str:
+        del prompt
+        raise EOFError
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.CONFIRMATION_DECLINED
+    assert "Traceback" not in captured.err
+
+
+def test_ut_c_056_keyboard_interrupt_at_prompt_exits_130(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-056: Ctrl-C at the confirmation prompt maps to exit code 130.
+
+    Traceability
+    ------------
+    Issue #45
+    """
+
+    def _raise_interrupt(prompt: str) -> str:
+        del prompt
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _raise_interrupt)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.INTERRUPTED
+    assert exit_code == 130
+    assert "Traceback" not in captured.err
+    assert "interrupted" in captured.err
+
+
+def test_ut_c_057_keyboard_interrupt_during_execution_exits_130(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-057: Ctrl-C deeper in the flow also maps to exit code 130.
+
+    Notes
+    -----
+    A parallel branch makes ``execute_notebook`` re-raise
+    ``KeyboardInterrupt`` after cleanup; this handler in ``main`` is what
+    turns that into exit code 130.
+
+    Traceability
+    ------------
+    Issue #45
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_interrupt(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module, "execute_notebook", _raise_interrupt)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.INTERRUPTED
+    assert "Traceback" not in captured.err
+    assert "interrupted" in captured.err
+
+
+def test_ut_c_063_force_overwrites_existing_output_file(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-063: ``--force`` reuses the requested path and replaces content.
+
+    Traceability
+    ------------
+    Issue #52
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("old content", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--force",
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{output}\n"
+    assert "output_path_deduplicated" not in captured.err
+    assert not (tmp_workdir / "out-1.html").exists()
+    content = output.read_text(encoding="utf-8")
+    assert content != "old content"
+    assert "<html" in content.lower()
+
+
+def test_ut_c_064_without_force_suffix_behavior_unchanged(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-064: Without ``--force`` the numeric-suffix dedupe still applies.
+
+    Traceability
+    ------------
+    Issue #52
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("old content", encoding="utf-8")
+    deduped = tmp_workdir / "out-1.html"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{deduped}\n"
+    assert output.read_text(encoding="utf-8") == "old content"
+    assert deduped.exists()
+
+
+def test_ut_c_065_dedupe_reserves_the_returned_name(tmp_workdir: Path) -> None:
+    """UT-C-065: ``dedupe_output_path`` reserves the name it returns.
+
+    Notes
+    -----
+    The returned path must already exist on disk (as an empty reservation
+    file, later replaced atomically), so a concurrent export can never be
+    handed the same name: a second call without any intervening write must
+    return the next suffix.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    first = dedupe_output_path(tmp_workdir / "report.html")
+    second = dedupe_output_path(tmp_workdir / "report.html")
+
+    assert first == tmp_workdir / "report.html"
+    assert first.exists()
+    assert second == tmp_workdir / "report-1.html"
+    assert second.exists()
+
+
+def test_ut_c_066_write_html_cleans_up_temp_file_on_failure(
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-066: A failed atomic replace leaves no temp file behind.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_os_error(src: object, dst: object) -> None:
+        del src, dst
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(cli_module.os, "replace", _raise_os_error)
+    target = tmp_workdir / "out.html"
+
+    with pytest.raises(OSError, match="replace failed"):
+        cli_module._write_html(target, "<html></html>")
+
+    leftovers = [p for p in tmp_workdir.iterdir() if p != target]
+    assert leftovers == []
+    assert not target.exists()
+
+
+def test_ut_c_067_write_failure_cleans_up_reservation(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-067: A write failure removes the dedupe reservation file.
+
+    Notes
+    -----
+    The requested path already exists, so the dedupe step reserves
+    ``out-1.html``. When writing then fails, the empty reservation must not
+    be left behind.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_os_error(path: Path, html: str) -> None:
+        del path, html
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_module, "_write_html", _raise_os_error)
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.EXECUTION_FAILED
+    assert not (tmp_workdir / "out-1.html").exists()
+    assert output.read_text(encoding="utf-8") == "existing"
+
+
+def test_ut_c_068_write_html_atomically_replaces_existing_content(
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-068: ``_write_html`` replaces an existing file with full content.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    from duckdb_ui_notebook_export.cli import _write_html
+
+    target = tmp_workdir / "out.html"
+    target.write_text("old", encoding="utf-8")
+    html = "<html><body>" + ("x" * 10_000) + "</body></html>"
+
+    _write_html(target, html)
+
+    assert target.read_text(encoding="utf-8") == html
+    leftovers = [p for p in tmp_workdir.iterdir() if p != target]
+    assert leftovers == []
+
+
+_REAL_UI_DB_FIXTURE = Path(__file__).parent / "fixtures" / "ui_db" / "ui.db"
+
+
+def _real_ui_db_fixture() -> Path:
+    """Return the real browser-derived ui.db fixture, skipping if absent.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to ``tests/fixtures/ui_db/ui.db``.
+    """
+    if not _REAL_UI_DB_FIXTURE.exists():
+        pytest.skip("real ui.db fixture not present")
+    return _REAL_UI_DB_FIXTURE
+
+
+def test_ut_c_069_list_json_prints_one_parseable_document(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-069: ``--list --json`` prints exactly one JSON array on stdout.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    import json
+    from datetime import datetime
+
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(["--ui-db", str(ui_db), "--list", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    parsed = json.loads(captured.out)
+    assert isinstance(parsed, list)
+    assert len(parsed) == 2
+    for entry in parsed:
+        assert set(entry) == {"name", "notebook_id", "updated_at"}
+        assert entry["name"] == "Untitled Notebook"
+        datetime.fromisoformat(entry["updated_at"])
+
+
+def test_ut_c_070_list_versions_json_prints_one_parseable_document(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-070: ``--list-versions --json`` prints exactly one JSON array.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    import json
+    from datetime import datetime
+
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(
+        [
+            "--ui-db",
+            str(ui_db),
+            "--notebook-id",
+            "e8c419fe-e596-4302-b885-039147139f1a",
+            "--list-versions",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    parsed = json.loads(captured.out)
+    assert isinstance(parsed, list)
+    assert len(parsed) >= 1
+    for entry in parsed:
+        assert set(entry) == {"version_id", "created_at"}
+        datetime.fromisoformat(entry["created_at"])
+
+
+def test_ut_c_071_json_without_list_flags_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-071: ``--json`` without ``--list``/``--list-versions`` exits 2.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--json", "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--json" in captured.err
+
+
+def test_ut_c_072_human_list_table_is_aligned_without_microseconds(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-072: The human ``--list`` table aligns columns, seconds precision.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(["--ui-db", str(ui_db), "--list"])
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    lines = captured.out.splitlines()
+    assert len(lines) == 3
+    header, first_row, second_row = lines
+    assert "2026-07-05 14:26:27" in captured.out
+    assert "479736" not in captured.out
+    id_offset_header = header.index("ID")
+    assert first_row.index("e8c419fe") == id_offset_header
+    assert second_row.index("902baeaf") == id_offset_header
+    updated_offset = header.index("Updated")
+    assert first_row.index("2026-") == updated_offset
+    assert second_row.index("2026-") == updated_offset
+
+
+def test_ut_c_073_human_versions_table_is_aligned_without_microseconds(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-073: The human ``--list-versions`` table drops microseconds.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(
+        [
+            "--ui-db",
+            str(ui_db),
+            "--notebook-id",
+            "e8c419fe-e596-4302-b885-039147139f1a",
+            "--list-versions",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    lines = captured.out.splitlines()
+    assert lines[0].startswith("Version")
+    assert "543609" not in captured.out
+    assert "479736" not in captured.out
+    created_offset = lines[0].index("Created")
+    for row in lines[1:]:
+        assert row.index("2026-") == created_offset

@@ -132,7 +132,11 @@ timeout-abort, only after) the point of failure.
 `ROLLBACK` cannot undo external side effects such as `COPY ... TO` file writes,
 writes to an attached database, remote writes, `INSTALL`, or `LOAD`. The CLI
 therefore asks for confirmation before execution; in non-interactive contexts,
-use `--yes` to make that confirmation explicit. `--no-external-access` runs
+use `--yes` to make that confirmation explicit. The confirmation prompt shows
+the notebook name, version, cell count, target database, write mode, and
+output path, followed by a short masked preview of each cell (first two
+non-empty lines, up to 160 characters); URI-style target databases are shown
+as their scheme only because URIs can embed credentials. `--no-external-access` runs
 with DuckDB external access disabled, which also disables external file reads
 such as CSV or Parquet scans.
 
@@ -172,6 +176,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | --- | --- | --- |
 | `notebook_name` | Notebook name to export. Optional when `--list` is used. | None |
 | `-h`, `--help` | Show help and exit. | Off |
+| `--version` | Show the tool version (and the DuckDB version in use) and exit. | Off |
 | `-o`, `--output` | Output HTML path. | `<notebook-name>.html` under the allowed base |
 | `--output-dir` | Allowed base directory and default output directory. | Current directory |
 | `--notebook-id` | Export the notebook with this exact ID (from `--list`); use when names are ambiguous. | None |
@@ -180,6 +185,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--nb-version` | Notebook version identifier to export. Must be an integer string; an unknown (but well-formed) version is reported as exit code 1 (see `--list-versions`). | Latest version |
 | `--list` | List notebooks and exit. | Off |
 | `--list-versions` | List versions for the selected notebook and exit. | Off |
+| `--json` | With `--list` or `--list-versions`, print the listing as a JSON array instead of a table. | Off |
 | `--max-rows` | Maximum rows to render per cell. Must be a positive integer (>= 1). | `1000` |
 | `--cell-timeout` | Per-cell execution timeout in seconds. Must be a positive, finite number. | `300.0` |
 | `--interrupt-grace` | Seconds to wait after a timeout interrupt before abandoning execution. Must be a positive, finite number. | `30.0` |
@@ -190,12 +196,20 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--no-external-access` | Disable DuckDB external access during execution. | Off |
 | `--require-ui-closed` | Open `ui.db` directly and require DuckDB UI to be closed. | Off |
 | `--yes` | Skip the execution confirmation prompt. | Off |
+| `--force` | Overwrite the output file if it exists, instead of writing to a numeric-suffixed sibling path. | Off |
+| `-q`, `--quiet` | Only show `ERROR`-level log events on stderr. Mutually exclusive with `-v`/`--verbose`. | Off |
+| `-v`, `--verbose` | Show `DEBUG`-level log events on stderr in addition to the default. Mutually exclusive with `-q`/`--quiet`. | Off |
 
-Existing output files are not overwritten; a numeric suffix is added. On
-success, the CLI prints the final output path (after any numeric-suffix
-deduplication) as a single line to stdout, so scripts can capture it
-directly; a renamed path also emits a warning naming the requested and
-actual paths on stderr.
+By default, existing output files are not overwritten; a numeric suffix is
+added. Pass `--force` to overwrite the requested path in place instead (no
+suffix, no dedupe warning). The HTML is written atomically: it is staged in
+a temporary file in the destination directory and moved into place with an
+atomic rename, so a reader never observes a partially written export, and
+the suffixed name is reserved on disk the moment it is chosen so a
+concurrent export cannot claim the same path. On success, the CLI prints
+the final output path (after any numeric-suffix deduplication) as a single
+line to stdout, so scripts can capture it directly; a renamed path also
+emits a warning naming the requested and actual paths on stderr.
 
 If `-o`/`--output` points outside the allowed base directory (the current
 directory by default, or the directory passed to `--output-dir`), the export
@@ -216,18 +230,24 @@ duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
 | 2 | One or more cells failed, timed out, or were skipped, or `--stop-on-error` stopped processing after the first cell error, or a timeout interrupt failed and the export ended partially. A non-integer `--nb-version`, or a non-positive `--max-rows`, `--cell-timeout`, or `--interrupt-grace` value, is also rejected with this code, as a standard argument-parsing error. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
 | 4 | `ui.db` access failed, including lock, corruption, storage-version mismatch, an unsupported stored notebook format, or a `ui.db` file whose schema does not match what this tool expects. |
-| 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
+| 5 | Execution confirmation was declined, including non-interactive execution without `--yes` and EOF (Ctrl-D) at the confirmation prompt. |
 | 6 | Notebook execution or HTML writing failed, including a missing or unusable `--db` target. |
+| 130 | Interrupted by Ctrl-C (`128 + SIGINT`), at the confirmation prompt or during execution. |
 
 By default, the exit code fails (exit 2) whenever any cell result is not a
 plain success (`ERROR`, `SKIPPED_ABORT`, `REJECTED_TRANSACTION_STATEMENT`,
 `TIMEOUT`), or execution was abandoned after an uninterruptible timeout;
 `--stop-on-error` additionally stops processing early after the first cell
-error. Pass `--no-fail-on-cell-error` to restore the previous (pre-0.0.3)
-behavior of exiting 0 whenever the run completes despite per-cell failures,
-which are still reported in the rendered HTML and on stderr; timeouts and
-abandoned execution still exit 2 even with this flag, since those indicate
-the export itself did not run to completion as requested.
+error. Whenever any cell fails, the CLI logs a `cell_failed` event per
+failed cell (1-based cell index, status, and a truncated error message) and
+a final `cells_failed_summary` event naming the output path, both on
+stderr, before returning the exit code; this happens regardless of
+`--no-fail-on-cell-error`. Pass `--no-fail-on-cell-error` to restore the
+previous (pre-0.0.3) behavior of exiting 0 whenever the run completes
+despite per-cell failures, which are still reported in the rendered HTML
+and on stderr; timeouts and abandoned execution still exit 2 even with
+this flag, since those indicate the export itself did not run to
+completion as requested.
 
 ### Limitations
 

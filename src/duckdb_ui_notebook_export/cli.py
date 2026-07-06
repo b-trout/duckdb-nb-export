@@ -22,9 +22,13 @@ and orchestration across the reader, executor, and renderer layers.
 """
 
 import argparse
+import json
+import logging
 import math
+import os
 import re
 import sys
+import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +48,7 @@ from duckdb_ui_notebook_export.exceptions import (
     UiDbAccessError,
 )
 from duckdb_ui_notebook_export.executor import (
+    _URI_SCHEME_PATTERN,
     CellStatus,
     ExecutionReport,
     display_target_database,
@@ -57,10 +62,15 @@ from duckdb_ui_notebook_export.reader import (
     list_versions,
     load_notebook,
 )
-from duckdb_ui_notebook_export.renderer import ExportMetadata, render_html
+from duckdb_ui_notebook_export.renderer import (
+    ExportMetadata,
+    mask_secrets,
+    render_html,
+)
 
 LOGGER = structlog.get_logger()
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[\s/\\:]+")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def sanitize_filename(name: str) -> str:
@@ -85,8 +95,42 @@ def sanitize_filename(name: str) -> str:
     return _UNSAFE_FILENAME_PATTERN.sub("_", name).strip("_")
 
 
+def _sanitized_beyond_whitespace(name: str, sanitized_name: str) -> bool:
+    """Return whether sanitization changed more than whitespace to underscores.
+
+    Parameters
+    ----------
+    name
+        Original notebook name.
+    sanitized_name
+        Result of ``sanitize_filename(name)``.
+
+    Returns
+    -------
+    bool
+        True when ``sanitized_name`` differs from a variant of ``name`` that
+        only replaces whitespace runs with underscores (and strips leading
+        and trailing underscores); False when the only change was
+        whitespace substitution.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Spaces in notebook names are common and expected to become underscores
+    in the output filename, so that alone should not warn. Path separators
+    (``/``, ``\\``) or colons being replaced indicates a more surprising
+    rename and should still warn.
+    """
+    whitespace_only_variant = _WHITESPACE_PATTERN.sub("_", name).strip("_")
+    return sanitized_name != whitespace_only_variant
+
+
 def dedupe_output_path(path: Path) -> Path:
-    """Return a non-existing output path by appending a numeric suffix.
+    """Reserve and return a free output path by appending a numeric suffix.
 
     Parameters
     ----------
@@ -96,22 +140,37 @@ def dedupe_output_path(path: Path) -> Path:
     Returns
     -------
     pathlib.Path
-        ``path`` when it does not exist, otherwise ``<name>-N.html``.
+        ``path`` when it did not exist, otherwise ``<name>-N.html``. The
+        returned path exists on disk as an empty reservation file.
 
     Raises
     ------
-    None
-        This function does not raise package-specific exceptions.
-    """
-    if not path.exists():
-        return path
+    OSError
+        Raised when the reservation file cannot be created (for example the
+        parent directory is not writable).
 
-    counter = 1
+    Notes
+    -----
+    Instead of probing with ``exists()`` (which leaves a window where a
+    concurrent process can claim the same name), each candidate is reserved
+    by creating it with ``open("x")`` (create-exclusive). The empty
+    reservation file is later replaced atomically by ``_write_html``'s
+    ``os.replace``; the caller owns cleaning up the reservation if the
+    write never happens (issue #62). The parent directory is created when
+    missing so the reservation can be placed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    candidate = path
+    counter = 0
     while True:
-        candidate = path.with_name(f"{path.stem}-{counter}{path.suffix}")
-        if not candidate.exists():
+        try:
+            candidate.touch(exist_ok=False)
+        except FileExistsError:
+            counter += 1
+            candidate = path.with_name(f"{path.stem}-{counter}{path.suffix}")
+        else:
             return candidate
-        counter += 1
 
 
 def resolve_output_path(
@@ -150,7 +209,7 @@ def resolve_output_path(
 
     if output is None:
         sanitized_name = sanitize_filename(notebook_name)
-        if sanitized_name != notebook_name:
+        if _sanitized_beyond_whitespace(notebook_name, sanitized_name):
             _direct_stderr_logger().warning(
                 "notebook_name_sanitized_for_output",
                 original_name=notebook_name,
@@ -171,42 +230,156 @@ def resolve_output_path(
     return resolved_path
 
 
-def confirm_execution(cells: list[Cell], *, assume_yes: bool) -> bool:
+_CELL_PREVIEW_MAX_LINES = 2
+_CELL_PREVIEW_MAX_CHARS = 160
+
+
+def _target_db_display(target_db: str) -> str:
+    """Return a credential-safe display form of the target database.
+
+    Parameters
+    ----------
+    target_db
+        Resolved target database connect string.
+
+    Returns
+    -------
+    str
+        ``:memory:`` unchanged; URI-style connect strings reduced to their
+        scheme (for example ``md: (URI)``); plain paths as given.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    URI connect strings can embed credentials (for example
+    ``postgres://user:password@host/db``), so only the scheme is shown.
+    Plain paths are printed in full: the terminal is the user's own, unlike
+    exported HTML. The scheme detection uses the same pattern as the
+    executor's local-path check.
+    """
+    if target_db == ":memory:":
+        return target_db
+    match = _URI_SCHEME_PATTERN.match(target_db)
+    if match is not None:
+        return f"{match.group(0)} (URI)"
+    return target_db
+
+
+def _cell_preview(sql: str) -> str:
+    """Return a masked, truncated one-glance preview of a cell's SQL.
+
+    Parameters
+    ----------
+    sql
+        Raw cell SQL text.
+
+    Returns
+    -------
+    str
+        ``mask_secrets``-sanitized SQL reduced to at most the first two
+        non-empty lines and at most 160 characters, with `` …`` appended
+        when anything was cut.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Masking runs first so that even a truncated preview can never leak a
+    ``CREATE SECRET`` parameter value into the terminal (issue #50).
+    """
+    masked = mask_secrets(sql)
+    lines = [line.strip() for line in masked.splitlines() if line.strip()]
+    truncated = len(lines) > _CELL_PREVIEW_MAX_LINES
+    preview = "\n".join(lines[:_CELL_PREVIEW_MAX_LINES])
+    if len(preview) > _CELL_PREVIEW_MAX_CHARS:
+        preview = preview[:_CELL_PREVIEW_MAX_CHARS]
+        truncated = True
+    if truncated:
+        preview += " …"
+    return preview
+
+
+def confirm_execution(
+    cells: list[Cell],
+    *,
+    target_db_display: str,
+    write_mode: str,
+    output_path: Path,
+    notebook_name: str,
+    version_id: str,
+    assume_yes: bool,
+) -> bool:
     """Confirm that notebook cells should be executed.
 
     Parameters
     ----------
     cells
-        Cells whose SQL should be shown to the user before execution.
+        Cells whose SQL previews should be shown before execution.
+    target_db_display
+        Credential-safe display form of the target database (see
+        ``_target_db_display``).
+    write_mode
+        Human-readable write-mode label (see ``_write_mode_display``).
+    output_path
+        Resolved HTML output path.
+    notebook_name
+        Human-readable notebook name.
+    version_id
+        Selected notebook version identifier.
     assume_yes
         Whether confirmation should be skipped.
 
     Returns
     -------
     bool
-        True when execution is confirmed, False when it is declined.
+        True when execution is confirmed, False when it is declined
+        (including when the prompt is ended with EOF, e.g. Ctrl-D).
 
     Raises
     ------
-    EOFError
-        Raised by ``input`` when an interactive prompt cannot read a response.
+    KeyboardInterrupt
+        Propagated from ``input`` when the user presses Ctrl-C; the CLI
+        entry point maps it to ``ExitCode.INTERRUPTED``.
 
     Notes
     -----
     In a non-TTY environment with ``assume_yes=False``, this function must
     return False instead of raising ``UiDbAccessError`` or ``SystemExit``. The
-    caller maps that result to ``ExitCode.CONFIRMATION_DECLINED``.
+    caller maps that result to ``ExitCode.CONFIRMATION_DECLINED``. EOF at the
+    prompt is treated the same as answering "n" (issue #45); previously the
+    ``EOFError`` escaped as a raw traceback with exit code 1. Cell SQL is
+    shown as a masked, truncated preview rather than in full, and the header
+    names the notebook, version, cell count, target database, write mode,
+    and output path so the user can judge the blast radius before answering
+    (issue #50).
     """
     if assume_yes:
         return True
     if not sys.stdin.isatty():
         return False
 
-    sys.stdout.write("The following SQL cells will be executed:\n")
-    for index, cell in enumerate(cells, start=1):
-        sys.stdout.write(f"\n[{index}]\n{cell.sql}\n")
+    sys.stdout.write("About to execute notebook cells:\n")
+    sys.stdout.write(f"  Notebook:        {notebook_name}\n")
+    sys.stdout.write(f"  Version:         {version_id}\n")
+    sys.stdout.write(f"  Cells:           {len(cells)}\n")
+    sys.stdout.write(f"  Target database: {target_db_display}\n")
+    sys.stdout.write(f"  Write mode:      {write_mode}\n")
+    sys.stdout.write(f"  Output path:     {output_path}\n")
 
-    response = input("Continue with notebook execution? [y/N] ")
+    for index, cell in enumerate(cells, start=1):
+        sys.stdout.write(f"\n[{index}]\n{_cell_preview(cell.sql)}\n")
+
+    try:
+        response = input("Continue with notebook execution? [y/N] ")
+    except EOFError:
+        return False
     return response.strip().lower() in {"y", "yes"}
 
 
@@ -243,8 +416,66 @@ def _direct_stderr_logger() -> structlog.BoundLogger:
     return structlog.wrap_logger(structlog.PrintLogger(sys.stderr))
 
 
+def _format_timestamp(value: datetime) -> str:
+    """Format a timestamp for human table output at seconds precision.
+
+    Parameters
+    ----------
+    value
+        Timestamp to format.
+
+    Returns
+    -------
+    str
+        ``YYYY-MM-DD HH:MM:SS``-style text without microseconds.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+    """
+    return value.isoformat(sep=" ", timespec="seconds")
+
+
+def _write_table(headers: list[str], rows: list[list[str]]) -> None:
+    """Write an aligned plain-text table to stdout.
+
+    Parameters
+    ----------
+    headers
+        Column header labels.
+    rows
+        Data rows; each row must have one value per header.
+
+    Returns
+    -------
+    None
+        The table is written to stdout.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Each column is left-padded to the width of its widest value (header
+    included) and columns are separated by two spaces; trailing whitespace
+    is stripped per line (issue #54).
+    """
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows)) if rows else len(header)
+        for index, header in enumerate(headers)
+    ]
+    for line_values in [headers, *rows]:
+        line = "  ".join(
+            value.ljust(width) for value, width in zip(line_values, widths, strict=True)
+        )
+        sys.stdout.write(line.rstrip() + "\n")
+
+
 def _write_notebook_table(notebooks: Iterable[NotebookInfo]) -> None:
-    """Write notebook metadata as a simple table to stdout.
+    """Write notebook metadata as an aligned table to stdout.
 
     Parameters
     ----------
@@ -256,15 +487,21 @@ def _write_notebook_table(notebooks: Iterable[NotebookInfo]) -> None:
     None
         The table is written to stdout.
     """
-    sys.stdout.write("Notebook\tID\tUpdated\n")
-    for notebook in notebooks:
-        sys.stdout.write(
-            f"{notebook.name}\t{notebook.notebook_id}\t{notebook.updated_at}\n"
-        )
+    _write_table(
+        ["Notebook", "ID", "Updated"],
+        [
+            [
+                notebook.name,
+                notebook.notebook_id,
+                _format_timestamp(notebook.updated_at),
+            ]
+            for notebook in notebooks
+        ],
+    )
 
 
 def _write_version_table(versions: Iterable[VersionInfo]) -> None:
-    """Write notebook version metadata as a simple table to stdout.
+    """Write notebook version metadata as an aligned table to stdout.
 
     Parameters
     ----------
@@ -276,9 +513,70 @@ def _write_version_table(versions: Iterable[VersionInfo]) -> None:
     None
         The table is written to stdout.
     """
-    sys.stdout.write("Version\tCreated\n")
-    for version in versions:
-        sys.stdout.write(f"{version.version_id}\t{version.created_at}\n")
+    _write_table(
+        ["Version", "Created"],
+        [
+            [version.version_id, _format_timestamp(version.created_at)]
+            for version in versions
+        ],
+    )
+
+
+def _write_notebook_json(notebooks: Iterable[NotebookInfo]) -> None:
+    """Write notebook metadata as a single JSON array to stdout.
+
+    Parameters
+    ----------
+    notebooks
+        Notebook metadata records to serialize.
+
+    Returns
+    -------
+    None
+        Exactly one JSON document is written to stdout.
+
+    Notes
+    -----
+    Timestamps are serialized in ISO 8601 form via ``isoformat`` so scripts
+    can parse them without guessing a format (issue #54).
+    """
+    payload = [
+        {
+            "name": notebook.name,
+            "notebook_id": notebook.notebook_id,
+            "updated_at": notebook.updated_at.isoformat(),
+        }
+        for notebook in notebooks
+    ]
+    sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+
+
+def _write_version_json(versions: Iterable[VersionInfo]) -> None:
+    """Write notebook version metadata as a single JSON array to stdout.
+
+    Parameters
+    ----------
+    versions
+        Version metadata records to serialize.
+
+    Returns
+    -------
+    None
+        Exactly one JSON document is written to stdout.
+
+    Notes
+    -----
+    Timestamps are serialized in ISO 8601 form via ``isoformat`` so scripts
+    can parse them without guessing a format (issue #54).
+    """
+    payload = [
+        {
+            "version_id": version.version_id,
+            "created_at": version.created_at.isoformat(),
+        }
+        for version in versions
+    ]
+    sys.stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
 def _utc_now_z() -> str:
@@ -293,7 +591,7 @@ def _utc_now_z() -> str:
 
 
 def _write_mode_display(*, allow_writes: bool, read_only: bool) -> str:
-    """Return a human-readable write-mode label for HTML metadata.
+    """Return a human-readable write-mode label for HTML metadata and prompts.
 
     Parameters
     ----------
@@ -368,8 +666,69 @@ def _cell_error_exit_required(
     return any(result.status is not CellStatus.OK for result in report.cell_results)
 
 
+_ERROR_MESSAGE_TRUNCATE_LENGTH = 300
+
+
+def _report_cell_failures(report: ExecutionReport, output_path: Path) -> None:
+    """Log one ERROR event per failed cell, plus a summary, to stderr.
+
+    Parameters
+    ----------
+    report
+        Notebook execution report.
+    output_path
+        Final HTML output path, named in the summary event so readers know
+        where to find full details.
+
+    Returns
+    -------
+    None
+        Log events are written to stderr through the direct stderr logger.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    This makes cell failures visible on stderr even though the export
+    itself completes and writes HTML; previously a non-OK cell result was
+    only visible in the rendered HTML, and the process exit code (2) gave
+    no on-screen indication of what failed. Called before the CLI decides
+    the final exit code, regardless of ``--no-fail-on-cell-error`` (only
+    ``_cell_error_exit_required`` decides whether the process exit code
+    reflects the failures).
+    """
+    logger = _direct_stderr_logger()
+    failed_count = 0
+    for index, result in enumerate(report.cell_results, start=1):
+        if result.status is CellStatus.OK:
+            continue
+        failed_count += 1
+        error_message = result.error_message or ""
+        if len(error_message) > _ERROR_MESSAGE_TRUNCATE_LENGTH:
+            error_message = error_message[:_ERROR_MESSAGE_TRUNCATE_LENGTH] + "..."
+        logger.error(
+            "cell_failed",
+            cell_index=index,
+            status=result.status.value,
+            error_message=error_message,
+        )
+
+    if failed_count == 0:
+        return
+
+    logger.warning(
+        "cells_failed_summary",
+        failed_count=failed_count,
+        total_count=len(report.cell_results),
+        error=f"details in {output_path}",
+    )
+
+
 def _write_html(path: Path, html: str) -> None:
-    """Write rendered HTML to disk using UTF-8.
+    """Write rendered HTML to disk atomically using UTF-8.
 
     Parameters
     ----------
@@ -382,9 +741,35 @@ def _write_html(path: Path, html: str) -> None:
     -------
     None
         The file is written to disk.
+
+    Raises
+    ------
+    OSError
+        Raised when the temporary file cannot be written or the atomic
+        replace fails; the temporary file is removed before re-raising.
+
+    Notes
+    -----
+    The document is first written to a temporary file in the same directory
+    and then moved onto ``path`` with ``os.replace``, so a reader never
+    observes a partially written file and an existing file (including the
+    empty reservation created by ``dedupe_output_path``, or the previous
+    export under ``--force``) is replaced atomically (issue #62).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(html)
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def _positive_int_arg(value: str) -> int:
@@ -501,11 +886,63 @@ def main(argv: list[str] | None = None) -> int:
     ------
     SystemExit
         Raised by ``argparse`` for help text or invalid arguments.
+
+    Notes
+    -----
+    ``KeyboardInterrupt`` raised anywhere inside the CLI flow (the
+    confirmation prompt, notebook execution, rendering, or writing) is
+    caught here, logged as a single short ``interrupted`` error event on
+    stderr (no traceback), and mapped to ``ExitCode.INTERRUPTED`` (130,
+    the shell convention of ``128 + SIGINT``) per issue #45.
     """
-    _logging.configure_logging()
+    try:
+        return _run(argv)
+    except KeyboardInterrupt:
+        _direct_stderr_logger().error(
+            "interrupted",
+            error="Interrupted by user (Ctrl-C).",
+        )
+        return int(ExitCode.INTERRUPTED)
+
+
+def _run(argv: list[str] | None = None) -> int:
+    """Parse arguments and run the export flow.
+
+    Parameters
+    ----------
+    argv
+        Optional argument vector without the program name. ``None`` uses
+        ``sys.argv`` via ``argparse``.
+
+    Returns
+    -------
+    int
+        Process exit code matching ``ExitCode`` values.
+
+    Raises
+    ------
+    SystemExit
+        Raised by ``argparse`` for help text or invalid arguments.
+    KeyboardInterrupt
+        Propagated to ``main``, which maps it to ``ExitCode.INTERRUPTED``.
+
+    Notes
+    -----
+    Logging is configured with ``force=True`` after argument parsing, once
+    ``-q``/``--quiet`` and ``-v``/``--verbose`` are known, so the CLI's
+    chosen level always wins over any earlier default ``configure_logging``
+    call (for example one made by a library import or a previous call in
+    the same process).
+    """
     parser = argparse.ArgumentParser(
         prog="duckdb-nb-export",
         description="Export a DuckDB UI notebook to static HTML.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__} (duckdb {duckdb.__version__})",
+        help="Show the tool version (and the DuckDB version in use) and exit.",
     )
     parser.add_argument(
         "notebook_name",
@@ -554,6 +991,12 @@ def main(argv: list[str] | None = None) -> int:
         "--list-versions",
         action="store_true",
         help="List versions for the selected notebook and exit.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With --list or --list-versions, print the listing as a JSON "
+        "array instead of a table.",
     )
     parser.add_argument(
         "--max-rows",
@@ -613,26 +1056,64 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the execution confirmation prompt.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the output file if it exists, instead of writing "
+        "to a numeric-suffixed sibling path.",
+    )
+    verbosity_group = parser.add_mutually_exclusive_group()
+    verbosity_group.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Only show ERROR-level log events on stderr. Mutually "
+        "exclusive with -v/--verbose.",
+    )
+    verbosity_group.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show DEBUG-level log events on stderr in addition to the "
+        "default INFO level. Mutually exclusive with -q/--quiet.",
+    )
     args = parser.parse_args(argv)
+
+    if args.quiet:
+        log_level = logging.ERROR
+    elif args.verbose:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+    _logging.configure_logging(level=log_level, force=True)
 
     if not args.list and args.notebook_name is None and args.notebook_id is None:
         parser.error(
             "notebook_name is required unless --list or --notebook-id is used."
         )
 
+    if args.json and not (args.list or args.list_versions):
+        parser.error("--json requires --list or --list-versions.")
+
     try:
         if args.list:
-            _write_notebook_table(list_notebooks(Path(args.ui_db)))
+            notebooks = list_notebooks(Path(args.ui_db))
+            if args.json:
+                _write_notebook_json(notebooks)
+            else:
+                _write_notebook_table(notebooks)
             return int(ExitCode.OK)
 
         if args.list_versions:
-            _write_version_table(
-                list_versions(
-                    Path(args.ui_db),
-                    args.notebook_name,
-                    notebook_id=args.notebook_id,
-                )
+            versions = list_versions(
+                Path(args.ui_db),
+                args.notebook_name,
+                notebook_id=args.notebook_id,
             )
+            if args.json:
+                _write_version_json(versions)
+            else:
+                _write_version_table(versions)
             return int(ExitCode.OK)
 
         if args.notebook_name is not None:
@@ -678,7 +1159,19 @@ def main(argv: list[str] | None = None) -> int:
             return int(ExitCode.OUTPUT_PATH_REJECTED)
 
     try:
-        if not confirm_execution(notebook.cells, assume_yes=args.yes):
+        target_db, used_memory_fallback = resolve_target_db(notebook, args.db)
+        if not confirm_execution(
+            notebook.cells,
+            target_db_display=_target_db_display(target_db),
+            write_mode=_write_mode_display(
+                allow_writes=args.allow_writes,
+                read_only=args.read_only,
+            ),
+            output_path=output_path,
+            notebook_name=notebook.name,
+            version_id=notebook.version_id,
+            assume_yes=args.yes,
+        ):
             LOGGER.error(
                 "confirmation_required",
                 error="Execution confirmation required; pass --yes to run "
@@ -686,7 +1179,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return int(ExitCode.CONFIRMATION_DECLINED)
 
-        target_db, used_memory_fallback = resolve_target_db(notebook, args.db)
         report = execute_notebook(
             notebook,
             target_db,
@@ -712,15 +1204,28 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         html = render_html(notebook, report, metadata)
-        final_output_path = dedupe_output_path(output_path)
-        if final_output_path != output_path:
-            _direct_stderr_logger().warning(
-                "output_path_deduplicated",
-                requested=str(output_path),
-                actual=str(final_output_path),
-            )
-        _write_html(final_output_path, html)
+        reservation: Path | None = None
+        if args.force:
+            final_output_path = output_path
+        else:
+            final_output_path = dedupe_output_path(output_path)
+            reservation = final_output_path
+            if final_output_path != output_path:
+                _direct_stderr_logger().warning(
+                    "output_path_deduplicated",
+                    requested=str(output_path),
+                    actual=str(final_output_path),
+                )
+        try:
+            _write_html(final_output_path, html)
+        except BaseException:
+            # Remove the empty name reservation created by
+            # dedupe_output_path when the write onto it never happened.
+            if reservation is not None:
+                reservation.unlink(missing_ok=True)
+            raise
         sys.stdout.write(f"{final_output_path}\n")
+        _report_cell_failures(report, final_output_path)
         if _cell_error_exit_required(
             report,
             stop_on_error=args.stop_on_error,
