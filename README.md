@@ -158,9 +158,12 @@ detection through the exit code, for example in CI.
 - Long scalar values are truncated after 500 characters in HTML output.
 - The reader depends on DuckDB UI's unofficial schema and stored notebook
   format v3.
-- Notebook JSON's `currentDatabase` / `useDatabase` (database name) is not
-  applied on re-execution yet; environment replay is not yet implemented, so
-  pass `--db <path>` to point at the right database.
+- Notebook JSON's `currentDatabase` / `useDatabase` (database name) is
+  applied with a best-effort `USE` on re-execution: it switches the database
+  only when a catalog with that name is attached (via `--db` or an earlier
+  ATTACH cell), and otherwise warns and continues. Database names are not
+  resolved to file paths, so still pass `--db <path>` for exports that
+  depend on existing tables.
 
 ### License
 
