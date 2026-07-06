@@ -153,6 +153,36 @@ class StorageVersionMismatchError(UiDbAccessError):
     """
 
 
+class UnsupportedNotebookFormatError(UiDbAccessError):
+    """Raised when a stored notebook uses an unsupported serialization format.
+
+    Parameters
+    ----------
+    *args
+        Positional exception message arguments inherited from ``Exception``.
+
+    Returns
+    -------
+    None
+        Exception classes do not return values.
+
+    Raises
+    ------
+    None
+        Instantiating the exception does not raise package-specific errors.
+
+    Notes
+    -----
+    Raised by ``_to_internal_notebook`` when ``notebookSerializationFormat``
+    does not equal ``reader.SUPPORTED_NOTEBOOK_FORMAT`` (currently 3). This
+    is a hard failure rather than a silent accept-and-hope, since a format
+    this tool has never seen may be parsed incorrectly without any warning
+    (see GitHub issue #58). Subclasses ``UiDbAccessError`` so it keeps the
+    same exit code (4, "storage-version mismatch" category) as other
+    ``ui.db`` incompatibility failures.
+    """
+
+
 class OutputPathError(ExporterError):
     """Raised when the requested output path is rejected.
 

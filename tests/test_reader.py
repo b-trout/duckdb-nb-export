@@ -1095,3 +1095,122 @@ def test_ut_r_026_unknown_nb_version_reports_display_name_and_hint(
     assert "reader-notebook" in message
     assert "None" not in message
     assert "--list-versions" in message
+
+
+def test_ut_r_027_unsupported_stored_notebook_format_hard_fails(
+    tmp_path: Path,
+) -> None:
+    """UT-R-027: an unsupported stored notebook format raises a clear error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that a stored notebook JSON whose
+        ``notebookSerializationFormat`` is not the supported value 3 raises
+        ``UnsupportedNotebookFormatError`` (a ``UiDbAccessError`` subclass)
+        naming the notebook, the encountered format version, and the
+        supported format version.
+
+    Notes
+    -----
+    Traceability: GitHub issue #58. Previously an unknown
+    ``notebookSerializationFormat`` was silently accepted and exported with
+    no warning.
+    """
+    from duckdb_ui_notebook_export.exceptions import UnsupportedNotebookFormatError
+
+    ui_db_path = tmp_path / "ui.db"
+    notebook_id = "55555555-5555-5555-5555-555555555555"
+    stored_json = (
+        '{"notebookSerializationFormat": 4, "cells": ['
+        '{"query": "SELECT 1", "cellId": 1, "isActive": true, '
+        '"runMode": "default"}'
+        '], "viewMode": {"mode": "default"}, "version": 1}'
+    )
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [notebook_id, "notebook_futurefmt0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [notebook_id, "Future Format Notebook", stored_json],
+        )
+    finally:
+        connection.close()
+
+    with pytest.raises(UnsupportedNotebookFormatError) as error_info:
+        load_notebook(ui_db_path, "Future Format Notebook")
+
+    message = str(error_info.value)
+    assert "Future Format Notebook" in message
+    assert "v4" in message
+    assert "v3" in message
+
+
+def test_ut_r_028_supported_notebook_format_constant_is_three() -> None:
+    """UT-R-028: the supported stored notebook format constant equals 3.
+
+    Returns
+    -------
+    None
+        The test asserts that ``SUPPORTED_NOTEBOOK_FORMAT`` is deliberately
+        pinned to ``3`` so that future bumps require a conscious code change
+        (and an accompanying test update) instead of silently drifting.
+
+    Notes
+    -----
+    Traceability: GitHub issue #58.
+    """
+    from duckdb_ui_notebook_export.reader import SUPPORTED_NOTEBOOK_FORMAT
+
+    assert SUPPORTED_NOTEBOOK_FORMAT == 3
+
+
+def test_ut_r_029_format_three_still_loads(tmp_path: Path) -> None:
+    """UT-R-029: stored notebook format v3 continues to load without error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that a notebook whose
+        ``notebookSerializationFormat`` is 3 loads successfully.
+
+    Notes
+    -----
+    Traceability: GitHub issue #58 (regression guard for the new hard-fail
+    check).
+    """
+    ui_db_path = tmp_path / "ui.db"
+    notebook_id = "66666666-6666-6666-6666-666666666666"
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [notebook_id, "notebook_fmt3ok0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [notebook_id, "Format Three Notebook", _MINIMAL_STORED_NOTEBOOK_JSON],
+        )
+    finally:
+        connection.close()
+
+    notebook = load_notebook(ui_db_path, "Format Three Notebook")
+
+    assert notebook.name == "Format Three Notebook"

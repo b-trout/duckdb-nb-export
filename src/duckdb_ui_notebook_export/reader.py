@@ -21,6 +21,7 @@ from duckdb_ui_notebook_export.exceptions import (
     NotebookNotFoundError,
     StorageVersionMismatchError,
     UiDbAccessError,
+    UnsupportedNotebookFormatError,
 )
 from duckdb_ui_notebook_export.models import (
     Cell,
@@ -31,6 +32,7 @@ from duckdb_ui_notebook_export.models import (
 )
 
 DEFAULT_UI_DB_PATH: Path = Path.home() / ".duckdb" / "extension_data" / "ui" / "ui.db"
+SUPPORTED_NOTEBOOK_FORMAT = 3
 _FETCH_CHUNK_SIZE = 1000
 _LOGGER = structlog.get_logger()
 _SYNTHETIC_UUID_NAMESPACE = uuid.UUID("d1ffdc0d-0000-4000-8000-000000000001")
@@ -381,6 +383,15 @@ def _to_internal_notebook(
         raise UiDbAccessError(
             f"Notebook {name!r} version {version} has invalid stored JSON: {error}"
         ) from error
+
+    if stored_notebook.notebook_serialization_format != SUPPORTED_NOTEBOOK_FORMAT:
+        raise UnsupportedNotebookFormatError(
+            f"Notebook {name!r} uses stored notebook format "
+            f"v{stored_notebook.notebook_serialization_format}; this "
+            "duckdb-nb-export release supports v"
+            f"{SUPPORTED_NOTEBOOK_FORMAT} only. Check for a newer "
+            "duckdb-nb-export release."
+        )
 
     return Notebook(
         name=name,
