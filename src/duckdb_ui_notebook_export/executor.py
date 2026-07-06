@@ -1138,16 +1138,25 @@ def execute_notebook(
                     "commit_skipped_after_aborted_transaction",
                     warning=writes_warning,
                 )
-    except _CellInterrupted as interrupted:
+    except KeyboardInterrupt as interrupted:
+        # Only _CellInterrupted carries worker_exited. A plain
+        # KeyboardInterrupt can only land here while no worker thread is
+        # running (between cells: e.g. during the _transaction_is_aborted
+        # probe, _apply_use_database, or loop bookkeeping), because the
+        # in-cell path always converts it to _CellInterrupted inside
+        # _run_cell_in_thread. With no worker thread using the connection,
+        # rollback + close is safe, so worker_exited defaults to True.
+        worker_exited = getattr(interrupted, "worker_exited", True)
         LOGGER.warning(
             "execution_interrupted",
-            worker_exited=interrupted.worker_exited,
+            worker_exited=worker_exited,
         )
-        if interrupted.worker_exited:
+        if worker_exited:
             # The worker thread returned (or was successfully interrupted
-            # within interrupt_grace), so the connection is not being used
-            # by another thread anymore: it is safe to roll back and close
-            # it, mirroring the normal-error cleanup path below.
+            # within interrupt_grace), or no worker thread was running at
+            # all, so the connection is not being used by another thread
+            # anymore: it is safe to roll back and close it, mirroring the
+            # normal-error cleanup path below.
             try:
                 connection.execute("ROLLBACK")
             except duckdb.Error:

@@ -602,6 +602,57 @@ def test_ut_x_047_keyboard_interrupt_with_worker_alive_leaves_connection_untouch
     real_connection.close()
 
 
+def test_ut_x_052_plain_keyboard_interrupt_between_cells_rolls_back_and_closes(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-052: a plain KeyboardInterrupt between cells still cleans up.
+
+    Notes
+    -----
+    A Ctrl-C can also land while no worker thread is running, for example
+    during the ``_transaction_is_aborted`` probe after a failed cell,
+    during ``_apply_use_database``, or in loop bookkeeping. Such a plain
+    ``KeyboardInterrupt`` (not ``_CellInterrupted``) must also trigger the
+    ROLLBACK-and-close cleanup before propagating: no worker thread can be
+    using the connection at that point, so touching it is safe.
+
+    Traceability
+    ------------
+    Issue #57
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    spy = _SpyConnection(real_connection)
+    monkeypatch.setattr(executor_module.duckdb, "connect", lambda *a, **k: spy)
+
+    def fake_transaction_is_aborted(
+        connection: duckdb.DuckDBPyConnection,
+    ) -> bool:
+        del connection
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        executor_module,
+        "_transaction_is_aborted",
+        fake_transaction_is_aborted,
+    )
+
+    notebook = make_notebook(
+        "SELECT * FROM does_not_exist;",
+        "SELECT 2 AS second;",
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        execute_notebook(notebook, str(fresh_duckdb))
+
+    assert any("ROLLBACK" in sql for sql in spy.executed_sql)
+    assert spy.close_called is True
+
+    real_connection.close()
+
+
 def test_ut_x_048_run_cell_in_thread_raises_cell_interrupted_on_join_interrupt(
     fresh_duckdb: Path,
     monkeypatch: pytest.MonkeyPatch,
