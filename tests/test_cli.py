@@ -1678,3 +1678,132 @@ def test_ut_c_054_version_flag_prints_tool_and_duckdb_versions(
     assert __version__ in captured.out
     assert duckdb.__version__ in captured.out
     assert "duckdb-nb-export" in captured.out
+
+
+def test_ut_c_055_eof_at_confirmation_prompt_declines(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-055: EOF at the confirmation prompt maps to exit code 5.
+
+    Notes
+    -----
+    Previously ``EOFError`` from ``input()`` escaped ``main`` as a raw
+    traceback with exit code 1, colliding with ``NOTEBOOK_NOT_FOUND``.
+
+    Traceability
+    ------------
+    Issue #45
+    """
+
+    def _raise_eof(prompt: str) -> str:
+        del prompt
+        raise EOFError
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.CONFIRMATION_DECLINED
+    assert "Traceback" not in captured.err
+
+
+def test_ut_c_056_keyboard_interrupt_at_prompt_exits_130(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-056: Ctrl-C at the confirmation prompt maps to exit code 130.
+
+    Traceability
+    ------------
+    Issue #45
+    """
+
+    def _raise_interrupt(prompt: str) -> str:
+        del prompt
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _raise_interrupt)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.INTERRUPTED
+    assert exit_code == 130
+    assert "Traceback" not in captured.err
+    assert "interrupted" in captured.err
+
+
+def test_ut_c_057_keyboard_interrupt_during_execution_exits_130(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-057: Ctrl-C deeper in the flow also maps to exit code 130.
+
+    Notes
+    -----
+    A parallel branch makes ``execute_notebook`` re-raise
+    ``KeyboardInterrupt`` after cleanup; this handler in ``main`` is what
+    turns that into exit code 130.
+
+    Traceability
+    ------------
+    Issue #45
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_interrupt(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module, "execute_notebook", _raise_interrupt)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.INTERRUPTED
+    assert "Traceback" not in captured.err
+    assert "interrupted" in captured.err

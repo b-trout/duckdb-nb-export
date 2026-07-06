@@ -197,6 +197,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `db == ":memory:"` and warned even when `:memory:` was requested
   explicitly rather than being a fallback
   ([#49](https://github.com/b-trout/duckdb-nb-export/issues/49)).
+- EOF (Ctrl-D) at the execution confirmation prompt now declines the
+  confirmation and exits 5 (`CONFIRMATION_DECLINED`), the same as
+  answering "n"; previously the `EOFError` escaped as a raw traceback
+  with exit code 1, colliding with `NOTEBOOK_NOT_FOUND`. Ctrl-C at the
+  prompt or anywhere during the export now logs a single short
+  `interrupted` error event (no traceback) and exits with the new
+  dedicated code 130 (`128 + SIGINT`)
+  ([#45](https://github.com/b-trout/duckdb-nb-export/issues/45)).
 - Cell failures are no longer silent on stderr. Previously a failing cell
   produced exit code 2 with no on-screen indication of what failed, even
   though README already claimed stderr reporting. The CLI now logs a

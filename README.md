@@ -219,8 +219,9 @@ duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
 | 2 | One or more cells failed, timed out, or were skipped, or `--stop-on-error` stopped processing after the first cell error, or a timeout interrupt failed and the export ended partially. A non-integer `--nb-version`, or a non-positive `--max-rows`, `--cell-timeout`, or `--interrupt-grace` value, is also rejected with this code, as a standard argument-parsing error. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
 | 4 | `ui.db` access failed, including lock, corruption, storage-version mismatch, an unsupported stored notebook format, or a `ui.db` file whose schema does not match what this tool expects. |
-| 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
+| 5 | Execution confirmation was declined, including non-interactive execution without `--yes` and EOF (Ctrl-D) at the confirmation prompt. |
 | 6 | Notebook execution or HTML writing failed, including a missing or unusable `--db` target. |
+| 130 | Interrupted by Ctrl-C (`128 + SIGINT`), at the confirmation prompt or during execution. |
 
 By default, the exit code fails (exit 2) whenever any cell result is not a
 plain success (`ERROR`, `SKIPPED_ABORT`, `REJECTED_TRANSACTION_STATEMENT`,

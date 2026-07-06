@@ -220,18 +220,22 @@ def confirm_execution(cells: list[Cell], *, assume_yes: bool) -> bool:
     Returns
     -------
     bool
-        True when execution is confirmed, False when it is declined.
+        True when execution is confirmed, False when it is declined
+        (including when the prompt is ended with EOF, e.g. Ctrl-D).
 
     Raises
     ------
-    EOFError
-        Raised by ``input`` when an interactive prompt cannot read a response.
+    KeyboardInterrupt
+        Propagated from ``input`` when the user presses Ctrl-C; the CLI
+        entry point maps it to ``ExitCode.INTERRUPTED``.
 
     Notes
     -----
     In a non-TTY environment with ``assume_yes=False``, this function must
     return False instead of raising ``UiDbAccessError`` or ``SystemExit``. The
-    caller maps that result to ``ExitCode.CONFIRMATION_DECLINED``.
+    caller maps that result to ``ExitCode.CONFIRMATION_DECLINED``. EOF at the
+    prompt is treated the same as answering "n" (issue #45); previously the
+    ``EOFError`` escaped as a raw traceback with exit code 1.
     """
     if assume_yes:
         return True
@@ -242,7 +246,10 @@ def confirm_execution(cells: list[Cell], *, assume_yes: bool) -> bool:
     for index, cell in enumerate(cells, start=1):
         sys.stdout.write(f"\n[{index}]\n{cell.sql}\n")
 
-    response = input("Continue with notebook execution? [y/N] ")
+    try:
+        response = input("Continue with notebook execution? [y/N] ")
+    except EOFError:
+        return False
     return response.strip().lower() in {"y", "yes"}
 
 
@@ -598,6 +605,45 @@ def main(argv: list[str] | None = None) -> int:
     ------
     SystemExit
         Raised by ``argparse`` for help text or invalid arguments.
+
+    Notes
+    -----
+    ``KeyboardInterrupt`` raised anywhere inside the CLI flow (the
+    confirmation prompt, notebook execution, rendering, or writing) is
+    caught here, logged as a single short ``interrupted`` error event on
+    stderr (no traceback), and mapped to ``ExitCode.INTERRUPTED`` (130,
+    the shell convention of ``128 + SIGINT``) per issue #45.
+    """
+    try:
+        return _run(argv)
+    except KeyboardInterrupt:
+        _direct_stderr_logger().error(
+            "interrupted",
+            error="Interrupted by user (Ctrl-C).",
+        )
+        return int(ExitCode.INTERRUPTED)
+
+
+def _run(argv: list[str] | None = None) -> int:
+    """Parse arguments and run the export flow.
+
+    Parameters
+    ----------
+    argv
+        Optional argument vector without the program name. ``None`` uses
+        ``sys.argv`` via ``argparse``.
+
+    Returns
+    -------
+    int
+        Process exit code matching ``ExitCode`` values.
+
+    Raises
+    ------
+    SystemExit
+        Raised by ``argparse`` for help text or invalid arguments.
+    KeyboardInterrupt
+        Propagated to ``main``, which maps it to ``ExitCode.INTERRUPTED``.
 
     Notes
     -----
