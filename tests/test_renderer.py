@@ -88,6 +88,8 @@ def _metadata() -> ExportMetadata:
         notebook_version_id="nb-version-123",
         tool_version="0.1.0",
         warnings=[],
+        target_database="sales.duckdb",
+        write_mode="rollback (default)",
     )
 
 
@@ -180,6 +182,61 @@ def _html_for(
     return render_html(
         _notebook(sql, cell_type=cell_type), _report(result), _metadata()
     )
+
+
+def test_ut_rd_024_footer_contains_target_database_and_write_mode() -> None:
+    """UT-RD-024: the footer shows target database and write mode lines.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    html = render_html(
+        _notebook("SELECT 1 AS value"),
+        _report(_ok_result([(1,)])),
+        ExportMetadata(
+            exported_at_utc="2026-07-05T00:00:00Z",
+            duckdb_version="v1.5.4",
+            notebook_version_id="nb-version-123",
+            tool_version="0.1.0",
+            warnings=[],
+            target_database="sales.duckdb",
+            write_mode="rollback (default)",
+        ),
+    )
+
+    assert "Target database" in html
+    assert "sales.duckdb" in html
+    assert "Write mode" in html
+    assert "rollback (default)" in html
+
+
+def test_ut_rd_025_footer_write_mode_values_render_verbatim() -> None:
+    """UT-RD-025: each write-mode value renders verbatim in the footer.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    for write_mode in (
+        "rollback (default)",
+        "writes committed (--allow-writes)",
+        "read-only",
+    ):
+        html = render_html(
+            _notebook("SELECT 1 AS value"),
+            _report(_ok_result([(1,)])),
+            ExportMetadata(
+                exported_at_utc="2026-07-05T00:00:00Z",
+                duckdb_version="v1.5.4",
+                notebook_version_id="nb-version-123",
+                tool_version="0.1.0",
+                warnings=[],
+                target_database=":memory:",
+                write_mode=write_mode,
+            ),
+        )
+        assert write_mode in html
 
 
 def test_ut_rd_001_cell_values_are_html_escaped() -> None:

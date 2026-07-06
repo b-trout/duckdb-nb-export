@@ -8,10 +8,13 @@ models directly, so they do not depend on the blocked DuckDB UI JSON schema.
 """
 
 import contextlib
+import threading
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import pytest
+import structlog.testing
 
 from duckdb_ui_notebook_export.exceptions import TargetDatabaseError
 from duckdb_ui_notebook_export.executor import (
@@ -20,6 +23,7 @@ from duckdb_ui_notebook_export.executor import (
     _empty_result,
     _requires_existence_check,
     contains_transaction_statement,
+    display_target_database,
     execute_notebook,
     resolve_target_db,
 )
@@ -497,6 +501,208 @@ def test_ut_x_026_normal_run_reports_not_abandoned(fresh_duckdb: Path) -> None:
     assert report.abandoned is False
 
 
+def test_ut_x_046_keyboard_interrupt_with_worker_exited_rolls_back_and_closes(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-046: KeyboardInterrupt with an exited worker rolls back and closes.
+
+    Notes
+    -----
+    Simulates a Ctrl-C landing while ``_run_cell_in_thread`` is waiting on
+    the worker thread's join: ``connection.interrupt()`` succeeded and the
+    worker thread returned within ``interrupt_grace``, so it is safe for
+    ``execute_notebook`` to issue a best-effort ``ROLLBACK`` and ``close()``
+    the connection before re-raising ``KeyboardInterrupt``.
+
+    Traceability
+    ------------
+    Issue #57
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    spy = _SpyConnection(real_connection)
+    monkeypatch.setattr(executor_module.duckdb, "connect", lambda *a, **k: spy)
+
+    def fake_run_cell_in_thread(
+        connection: duckdb.DuckDBPyConnection,
+        sql: str,
+        max_rows: int,
+        cell_timeout: float,
+        interrupt_grace: float,
+    ) -> tuple[CellResult | None, BaseException | None, bool]:
+        del connection, sql, max_rows, cell_timeout, interrupt_grace
+        raise executor_module._CellInterrupted(worker_exited=True)
+
+    monkeypatch.setattr(
+        executor_module,
+        "_run_cell_in_thread",
+        fake_run_cell_in_thread,
+    )
+
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    with pytest.raises(KeyboardInterrupt):
+        execute_notebook(notebook, str(fresh_duckdb))
+
+    assert any("ROLLBACK" in sql for sql in spy.executed_sql)
+    assert spy.close_called is True
+
+    real_connection.close()
+
+
+def test_ut_x_047_keyboard_interrupt_with_worker_alive_leaves_connection_untouched(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-047: KeyboardInterrupt with a live worker never touches the connection.
+
+    Notes
+    -----
+    Simulates the uninterruptible case: the worker thread is still alive
+    after ``interrupt_grace``, so ``execute_notebook`` must not issue
+    COMMIT/ROLLBACK or ``close()`` on the connection (mirroring the
+    abandoned-timeout rationale) before re-raising ``KeyboardInterrupt``.
+
+    Traceability
+    ------------
+    Issue #57
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    spy = _SpyConnection(real_connection)
+    monkeypatch.setattr(executor_module.duckdb, "connect", lambda *a, **k: spy)
+
+    def fake_run_cell_in_thread(
+        connection: duckdb.DuckDBPyConnection,
+        sql: str,
+        max_rows: int,
+        cell_timeout: float,
+        interrupt_grace: float,
+    ) -> tuple[CellResult | None, BaseException | None, bool]:
+        del connection, sql, max_rows, cell_timeout, interrupt_grace
+        raise executor_module._CellInterrupted(worker_exited=False)
+
+    monkeypatch.setattr(
+        executor_module,
+        "_run_cell_in_thread",
+        fake_run_cell_in_thread,
+    )
+
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    with pytest.raises(KeyboardInterrupt):
+        execute_notebook(notebook, str(fresh_duckdb))
+
+    assert not any("ROLLBACK" in sql or "COMMIT" in sql for sql in spy.executed_sql)
+    assert spy.close_called is False
+
+    real_connection.close()
+
+
+def test_ut_x_052_plain_keyboard_interrupt_between_cells_rolls_back_and_closes(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-052: a plain KeyboardInterrupt between cells still cleans up.
+
+    Notes
+    -----
+    A Ctrl-C can also land while no worker thread is running, for example
+    during the ``_transaction_is_aborted`` probe after a failed cell,
+    during ``_apply_use_database``, or in loop bookkeeping. Such a plain
+    ``KeyboardInterrupt`` (not ``_CellInterrupted``) must also trigger the
+    ROLLBACK-and-close cleanup before propagating: no worker thread can be
+    using the connection at that point, so touching it is safe.
+
+    Traceability
+    ------------
+    Issue #57
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    spy = _SpyConnection(real_connection)
+    monkeypatch.setattr(executor_module.duckdb, "connect", lambda *a, **k: spy)
+
+    def fake_transaction_is_aborted(
+        connection: duckdb.DuckDBPyConnection,
+    ) -> bool:
+        del connection
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        executor_module,
+        "_transaction_is_aborted",
+        fake_transaction_is_aborted,
+    )
+
+    notebook = make_notebook(
+        "SELECT * FROM does_not_exist;",
+        "SELECT 2 AS second;",
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        execute_notebook(notebook, str(fresh_duckdb))
+
+    assert any("ROLLBACK" in sql for sql in spy.executed_sql)
+    assert spy.close_called is True
+
+    real_connection.close()
+
+
+def test_ut_x_048_run_cell_in_thread_raises_cell_interrupted_on_join_interrupt(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-048: a KeyboardInterrupt during the initial join is handled.
+
+    Notes
+    -----
+    Directly exercises ``_run_cell_in_thread``: patches ``threading.Thread``
+    so the first ``join`` call raises ``KeyboardInterrupt`` (simulating a
+    signal arriving while the main thread waits), then asserts that
+    ``connection.interrupt()`` is called and ``_CellInterrupted`` is raised
+    with ``worker_exited`` reflecting whether the thread was still alive
+    after the grace-period join.
+
+    Traceability
+    ------------
+    Issue #57
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    spy = _SpyConnection(real_connection)
+
+    class _RaisingOnFirstJoinThread(threading.Thread):
+        _join_calls = 0
+
+        def join(self, timeout: float | None = None) -> None:
+            type(self)._join_calls += 1
+            if type(self)._join_calls == 1:
+                raise KeyboardInterrupt
+            super().join(timeout)
+
+    monkeypatch.setattr(executor_module.threading, "Thread", _RaisingOnFirstJoinThread)
+
+    with pytest.raises(executor_module._CellInterrupted) as exc_info:
+        executor_module._run_cell_in_thread(
+            cast("duckdb.DuckDBPyConnection", spy),
+            "SELECT 1;",
+            1000,
+            300.0,
+            5.0,
+        )
+
+    assert spy.interrupt_called is True
+    assert exc_info.value.worker_exited is True
+
+    real_connection.close()
+
+
 def test_ut_x_014_cli_db_overrides_notebook_database_info(
     tmp_path: Path,
 ) -> None:
@@ -536,6 +742,156 @@ def test_ut_x_016_unresolved_db_falls_back_to_memory_with_warning() -> None:
     assert report.used_memory_fallback is True
     assert any(":memory:" in warning for warning in report.warnings)
     assert report.cell_results[0].status is CellStatus.OK
+
+
+def test_ut_x_041_explicit_memory_db_with_fallback_false_has_no_warning() -> None:
+    """UT-X-041: explicit ``--db :memory:`` must not warn about fallback.
+
+    Notes
+    -----
+    ``used_memory_fallback=False`` models the CLI path where
+    ``resolve_target_db`` returned ``False`` because ``--db`` was given
+    explicitly as ``:memory:``, even though the resulting database string is
+    still the literal ``":memory:"``.
+
+    Traceability
+    ------------
+    Issue #49
+    """
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(
+        notebook,
+        ":memory:",
+        used_memory_fallback=False,
+    )
+
+    assert report.used_memory_fallback is False
+    assert not any(
+        "no target database was resolved" in warning.lower()
+        for warning in report.warnings
+    )
+    assert report.cell_results[0].status is CellStatus.OK
+
+
+def test_ut_x_042_used_memory_fallback_true_forces_warning() -> None:
+    """UT-X-042: an explicit fallback flag of True still warns.
+
+    Traceability
+    ------------
+    Issue #49
+    """
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(
+        notebook,
+        ":memory:",
+        used_memory_fallback=True,
+    )
+
+    assert report.used_memory_fallback is True
+    assert any(
+        "no target database was resolved" in warning.lower()
+        for warning in report.warnings
+    )
+
+
+def test_ut_x_043_used_memory_fallback_none_keeps_legacy_recompute() -> None:
+    """UT-X-043: omitting the flag preserves the legacy recompute-from-string.
+
+    Notes
+    -----
+    Direct callers that do not pass ``used_memory_fallback`` (or pass
+    ``None`` explicitly) must keep the pre-#49 behavior of inferring the
+    flag from ``db == ":memory:"``, for backward compatibility.
+
+    Traceability
+    ------------
+    Issue #49
+    """
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(notebook, ":memory:")
+
+    assert report.used_memory_fallback is True
+    assert any(
+        "no target database was resolved" in warning.lower()
+        for warning in report.warnings
+    )
+
+
+def test_ut_x_044_cell_started_and_finished_events_are_logged(
+    fresh_duckdb: Path,
+) -> None:
+    """UT-X-044: each cell logs ``cell_started``/``cell_finished`` at INFO.
+
+    Notes
+    -----
+    Covers a 2-cell notebook where the second cell errors, asserting that
+    both cells produce matching ``cell_started``/``cell_finished`` pairs
+    with correct 1-based indices, total cell count, and final status
+    (including the ``ERROR`` cell).
+
+    Traceability
+    ------------
+    Issue #51
+    """
+    notebook = make_notebook(
+        "SELECT 1 AS first;",
+        "SELECT * FROM does_not_exist;",
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        report = execute_notebook(notebook, str(fresh_duckdb))
+
+    assert report.cell_results[0].status is CellStatus.OK
+    assert report.cell_results[1].status is CellStatus.ERROR
+
+    started_events = [entry for entry in logs if entry["event"] == "cell_started"]
+    finished_events = [entry for entry in logs if entry["event"] == "cell_finished"]
+
+    assert [entry["cell_index"] for entry in started_events] == [1, 2]
+    assert all(entry["total_cells"] == 2 for entry in started_events)
+    assert all(entry["log_level"] == "info" for entry in started_events)
+
+    assert [entry["cell_index"] for entry in finished_events] == [1, 2]
+    assert all(entry["total_cells"] == 2 for entry in finished_events)
+    assert all(entry["log_level"] == "info" for entry in finished_events)
+    assert [entry["status"] for entry in finished_events] == ["OK", "ERROR"]
+    assert all(
+        isinstance(entry["duration_seconds"], float) for entry in finished_events
+    )
+
+
+def test_ut_x_045_cell_finished_logged_for_timeout(fresh_duckdb: Path) -> None:
+    """UT-X-045: a timed-out cell still logs ``cell_finished`` with TIMEOUT.
+
+    Traceability
+    ------------
+    Issue #51
+    """
+    notebook = make_notebook(
+        """
+        SELECT sum(i * j)
+        FROM range(100000000) AS lhs(i)
+        CROSS JOIN range(100000000) AS rhs(j);
+        """,
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        report = execute_notebook(
+            notebook,
+            str(fresh_duckdb),
+            cell_timeout=0.5,
+            interrupt_grace=1.0,
+        )
+
+    assert report.cell_results[0].status is CellStatus.TIMEOUT
+    finished_events = [entry for entry in logs if entry["event"] == "cell_finished"]
+    assert len(finished_events) == 1
+    assert finished_events[0]["status"] == "TIMEOUT"
+    assert finished_events[0]["cell_index"] == 1
+    assert finished_events[0]["total_cells"] == 1
 
 
 def test_ut_x_017_fetches_only_max_rows_plus_one(fresh_duckdb: Path) -> None:
@@ -833,6 +1189,51 @@ def test_ut_x_030_requires_existence_check_skips_uri_schemes() -> None:
     assert _requires_existence_check("md:my_database") is False
     assert _requires_existence_check("s3://bucket/key.duckdb") is False
     assert _requires_existence_check("someschemey:whatever") is False
+
+
+def test_ut_x_049_display_target_database_memory() -> None:
+    """UT-X-049: ``:memory:`` displays verbatim.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert display_target_database(":memory:") == ":memory:"
+
+
+def test_ut_x_050_display_target_database_uri_scheme_shows_scheme_only() -> None:
+    """UT-X-050: URI-style connect strings display only the scheme.
+
+    Notes
+    -----
+    URIs may embed credentials (for example ``postgres://user:pass@host/db``
+    via the postgres scanner extension), so only the scheme name is shown,
+    never the full connect string.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert display_target_database("md:my_db") == "md: (URI)"
+    assert display_target_database("postgres://user:pass@host/db") == "postgres: (URI)"
+    assert "user" not in display_target_database("postgres://user:pass@host/db")
+    assert "pass" not in display_target_database("postgres://user:pass@host/db")
+
+
+def test_ut_x_051_display_target_database_plain_path_shows_basename_only() -> None:
+    """UT-X-051: plain filesystem paths display only the basename.
+
+    Notes
+    -----
+    Only the basename is shown (not the full path) for privacy, per the
+    user-approved decision on issue #56.
+
+    Traceability
+    ------------
+    Issue #56
+    """
+    assert display_target_database("/a/b/sales.duckdb") == "sales.duckdb"
+    assert display_target_database("relative/dir/my.db") == "my.db"
 
 
 def test_ut_x_031_nonexistent_db_path_raises_and_creates_no_file(

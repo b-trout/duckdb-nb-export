@@ -23,6 +23,7 @@ Functions are intentionally unimplemented stubs for test-first development.
 import enum
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,42 @@ DML_STATEMENT_TYPES = {
     duckdb.StatementType.DELETE,
 }
 _URI_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
+
+
+class _CellInterrupted(KeyboardInterrupt):
+    """A ``KeyboardInterrupt`` received while a cell's worker thread was running.
+
+    Parameters
+    ----------
+    worker_exited
+        Whether the worker thread had already returned (or could be
+        interrupted and returned within ``interrupt_grace``) by the time
+        this exception is raised.
+
+    Returns
+    -------
+    _CellInterrupted
+        Exception instance carrying ``worker_exited``.
+
+    Raises
+    ------
+    None
+        Construction does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Subclasses ``KeyboardInterrupt`` so that any code unaware of this type
+    (for example a bare ``except KeyboardInterrupt`` elsewhere) still
+    observes an interrupt rather than an unexpected exception type. The
+    ``worker_exited`` flag lets ``execute_notebook`` decide whether it is
+    safe to issue ``ROLLBACK``/``close()`` on the connection (issue #57):
+    when the worker thread is still alive, DuckDB serializes operations per
+    connection, so touching the connection again could block forever.
+    """
+
+    def __init__(self, *, worker_exited: bool) -> None:
+        super().__init__()
+        self.worker_exited = worker_exited
 
 
 class CellStatus(enum.Enum):
@@ -227,6 +264,46 @@ def _requires_existence_check(db: str) -> bool:
     if db == ":memory:":
         return False
     return _URI_SCHEME_PATTERN.match(db) is None
+
+
+def display_target_database(db: str) -> str:
+    """Return a privacy-safe display form of the target database string.
+
+    Parameters
+    ----------
+    db
+        Target database string as passed to ``duckdb.connect`` (``--db``,
+        after resolution by ``resolve_target_db``).
+
+    Returns
+    -------
+    str
+        ``":memory:"`` unchanged; for URI-style connect strings (matched by
+        ``_URI_SCHEME_PATTERN``, e.g. ``md:...`` or ``postgres://...``) the
+        scheme name only, rendered as ``"<scheme>: (URI)"``; for plain
+        filesystem paths, the basename only (``Path(db).name``).
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    URI-style connect strings may embed credentials (for example
+    ``postgres://user:pass@host/db``), so only the scheme is ever shown,
+    never the rest of the string. Plain paths show only the basename, not
+    the full path, per the privacy decision on issue #56.
+    """
+    if db == ":memory:":
+        return ":memory:"
+
+    match = _URI_SCHEME_PATTERN.match(db)
+    if match is not None:
+        scheme = match.group(0)
+        return f"{scheme} (URI)"
+
+    return Path(db).name
 
 
 def contains_transaction_statement(sql: str) -> bool:
@@ -447,6 +524,22 @@ def _run_cell_in_thread(
     -------
     tuple[CellResult | None, BaseException | None, bool]
         Result, exception, and whether execution was abandoned after timeout.
+
+    Raises
+    ------
+    _CellInterrupted
+        Raised when ``KeyboardInterrupt`` (e.g. Ctrl-C / SIGINT) arrives
+        while waiting on the worker thread. ``connection.interrupt()`` is
+        attempted first and the worker is given ``interrupt_grace`` seconds
+        to return before this is raised, so ``worker_exited`` reports
+        whether it is safe for the caller to touch the connection again
+        (issue #57).
+
+    Notes
+    -----
+    ``KeyboardInterrupt`` can only land here (rather than in the worker
+    thread itself) because ``thread.join()`` is where the main thread is
+    blocked; Python delivers signals to the main thread only.
     """
     state: dict[str, CellResult | BaseException] = {}
 
@@ -458,10 +551,17 @@ def _run_cell_in_thread(
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
-    thread.join(cell_timeout)
+    try:
+        thread.join(cell_timeout)
+    except KeyboardInterrupt:
+        _interrupt_and_raise(connection, thread, interrupt_grace)
+
     if thread.is_alive():
         connection.interrupt()
-        thread.join(interrupt_grace)
+        try:
+            thread.join(interrupt_grace)
+        except KeyboardInterrupt:
+            _interrupt_and_raise(connection, thread, interrupt_grace)
         if thread.is_alive():
             return None, None, True
         return (
@@ -480,6 +580,38 @@ def _run_cell_in_thread(
         error if isinstance(error, BaseException) else None,
         False,
     )
+
+
+def _interrupt_and_raise(
+    connection: duckdb.DuckDBPyConnection,
+    thread: threading.Thread,
+    interrupt_grace: float,
+) -> None:
+    """Interrupt the connection, give the worker a grace period, then re-raise.
+
+    Parameters
+    ----------
+    connection
+        Dedicated DuckDB connection used by the export.
+    thread
+        Worker thread executing the current cell.
+    interrupt_grace
+        Seconds to wait for the interrupted worker to return.
+
+    Returns
+    -------
+    None
+        This function never returns normally.
+
+    Raises
+    ------
+    _CellInterrupted
+        Always raised, carrying whether the worker thread exited within
+        ``interrupt_grace`` after ``connection.interrupt()``.
+    """
+    connection.interrupt()
+    thread.join(interrupt_grace)
+    raise _CellInterrupted(worker_exited=not thread.is_alive())
 
 
 def _transaction_is_aborted(connection: duckdb.DuckDBPyConnection) -> bool:
@@ -719,6 +851,7 @@ def execute_notebook(
     interrupt_grace: float = 30.0,
     stop_on_error: bool = False,
     no_external_access: bool = False,
+    used_memory_fallback: bool | None = None,
 ) -> ExecutionReport:
     """Execute notebook cells against a DuckDB database.
 
@@ -747,6 +880,15 @@ def execute_notebook(
         Stop execution after the first failed cell.
     no_external_access
         Disable DuckDB external access during execution.
+    used_memory_fallback
+        Whether ``db`` is ``":memory:"`` because no target database could be
+        resolved (as reported by ``resolve_target_db``), as opposed to an
+        explicit ``--db :memory:``. When True, the "no target database was
+        resolved" warning is emitted; when False, it is suppressed even
+        though ``db == ":memory:"`` (issue #49). When ``None`` (the
+        default), this parameter falls back to the legacy behavior of
+        recomputing the flag as ``db == ":memory:"``, which keeps direct
+        callers that do not pass this keyword working exactly as before.
 
     Returns
     -------
@@ -770,7 +912,8 @@ def execute_notebook(
     The intended implementation uses one transaction and rolls back by default.
     """
     warnings: list[str] = []
-    used_memory_fallback = db == ":memory:"
+    if used_memory_fallback is None:
+        used_memory_fallback = db == ":memory:"
     if used_memory_fallback:
         warning = "No target database was resolved; executing against :memory:."
         warnings.append(warning)
@@ -810,8 +953,10 @@ def execute_notebook(
                 failed_use_databases,
             )
 
+        total_cells = len(notebook.cells)
         for index, cell in enumerate(notebook.cells):
-            remaining_count = len(notebook.cells) - index - 1
+            remaining_count = total_cells - index - 1
+            cell_number = index + 1
             if contains_transaction_statement(cell.sql):
                 result = _empty_result(
                     CellStatus.REJECTED_TRANSACTION_STATEMENT,
@@ -830,6 +975,12 @@ def execute_notebook(
                     failed_use_databases,
                 )
 
+            LOGGER.info(
+                "cell_started",
+                cell_index=cell_number,
+                total_cells=total_cells,
+            )
+            cell_start_time = time.monotonic()
             result, error, cell_abandoned = _run_cell_in_thread(
                 connection,
                 cell.sql,
@@ -837,6 +988,7 @@ def execute_notebook(
                 cell_timeout,
                 interrupt_grace,
             )
+            duration_seconds = round(time.monotonic() - cell_start_time, 1)
             if cell_abandoned:
                 abandoned = True
                 cell_results.append(
@@ -845,6 +997,13 @@ def execute_notebook(
                         "Cell execution exceeded the timeout and could not "
                         "be interrupted.",
                     ),
+                )
+                LOGGER.info(
+                    "cell_finished",
+                    cell_index=cell_number,
+                    total_cells=total_cells,
+                    status=CellStatus.TIMEOUT.value,
+                    duration_seconds=duration_seconds,
                 )
                 if not stop_on_error:
                     _append_skipped_abort_results(
@@ -857,6 +1016,13 @@ def execute_notebook(
             if error is not None:
                 cell_results.append(
                     _empty_result(CellStatus.ERROR, str(error)),
+                )
+                LOGGER.info(
+                    "cell_finished",
+                    cell_index=cell_number,
+                    total_cells=total_cells,
+                    status=CellStatus.ERROR.value,
+                    duration_seconds=duration_seconds,
                 )
                 if stop_on_error:
                     break
@@ -877,6 +1043,13 @@ def execute_notebook(
                     "Cell execution ended without a result.",
                 )
             cell_results.append(result)
+            LOGGER.info(
+                "cell_finished",
+                cell_index=cell_number,
+                total_cells=total_cells,
+                status=result.status.value,
+                duration_seconds=duration_seconds,
+            )
 
             if result.status is not CellStatus.OK and stop_on_error:
                 break
@@ -965,6 +1138,36 @@ def execute_notebook(
                     "commit_skipped_after_aborted_transaction",
                     warning=writes_warning,
                 )
+    except KeyboardInterrupt as interrupted:
+        # Only _CellInterrupted carries worker_exited. A plain
+        # KeyboardInterrupt can only land here while no worker thread is
+        # running (between cells: e.g. during the _transaction_is_aborted
+        # probe, _apply_use_database, or loop bookkeeping), because the
+        # in-cell path always converts it to _CellInterrupted inside
+        # _run_cell_in_thread. With no worker thread using the connection,
+        # rollback + close is safe, so worker_exited defaults to True.
+        worker_exited = getattr(interrupted, "worker_exited", True)
+        LOGGER.warning(
+            "execution_interrupted",
+            worker_exited=worker_exited,
+        )
+        if worker_exited:
+            # The worker thread returned (or was successfully interrupted
+            # within interrupt_grace), or no worker thread was running at
+            # all, so the connection is not being used by another thread
+            # anymore: it is safe to roll back and close it, mirroring the
+            # normal-error cleanup path below.
+            try:
+                connection.execute("ROLLBACK")
+            except duckdb.Error:
+                LOGGER.warning("rollback_after_interrupt_failed")
+            connection.close()
+        # else: the worker thread is still alive and may still be using the
+        # connection. Mirroring the abandoned-timeout rationale above, the
+        # connection is deliberately left untouched (no COMMIT/ROLLBACK,
+        # no close()) because DuckDB serializes operations per connection
+        # and touching it again from this thread could block forever.
+        raise
     except Exception:
         try:
             connection.execute("ROLLBACK")
