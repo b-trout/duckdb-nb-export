@@ -150,9 +150,13 @@ detection through the exit code, for example in CI.
 
 ### Limitations
 
-- Chart rendering is not supported in Phase 1. Chart cells are re-executed and
-  displayed as tables with a note; stored format v3 has no chart
-  representation.
+- Chart rendering is not supported, and this is a permanent limitation
+  rather than a pending feature: DuckDB UI does not persist chart
+  configuration anywhere (neither in notebook JSON nor in any `ui.db`
+  table, verified against the UI frontend bundle), so there is no stored
+  chart definition an exporter could reproduce. Cells are re-executed and
+  displayed as tables. If a future DuckDB UI version starts persisting
+  chart settings, chart export will be reconsidered.
 - Result display is limited to the first 1,000 rows by default. The total row
   count is not computed.
 - Long scalar values are truncated after 500 characters in HTML output.
@@ -244,7 +248,10 @@ on DuckDB `1.5.4` remain blocking.
 
 See design document section 2.1. Phase 1.5 adds a notebook-cell callable
 `export_notebook_html()` path after the target-database lock problem is
-resolved. Phase 2 targets client-side chart embedding and a C++ core.
+resolved. Phase 2 targets a C++ rendering core; client-side chart embedding
+is dormant because DuckDB UI does not persist chart settings (see
+Limitations), and will only be revisited if a future DuckDB UI version
+starts persisting them.
 
 ### Conventions
 

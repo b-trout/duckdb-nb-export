@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The error for a declined non-interactive confirmation now names the fix:
   `Execution confirmation required; pass --yes to run non-interactively.`
   ([#15](https://github.com/b-trout/duckdb-nb-export/issues/15)).
+- Documented that the lack of chart support is a permanent limitation
+  rather than an unimplemented Phase 1 feature: DuckDB UI does not
+  persist chart configuration anywhere, so there is no stored chart
+  definition an exporter could reproduce
+  ([#6](https://github.com/b-trout/duckdb-nb-export/issues/6)).
 
 ## [0.0.1] - 2026-07-05
 
