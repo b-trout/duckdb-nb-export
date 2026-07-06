@@ -21,13 +21,16 @@ Functions are intentionally unimplemented stubs for test-first development.
 """
 
 import enum
+import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import duckdb
 import structlog
 
+from duckdb_ui_notebook_export.exceptions import TargetDatabaseError
 from duckdb_ui_notebook_export.models import Notebook
 
 LOGGER = structlog.get_logger()
@@ -37,6 +40,7 @@ DML_STATEMENT_TYPES = {
     duckdb.StatementType.UPDATE,
     duckdb.StatementType.DELETE,
 }
+_URI_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
 
 
 class CellStatus(enum.Enum):
@@ -125,6 +129,12 @@ class ExecutionReport:
         Warning messages to surface in CLI output and HTML metadata.
     used_memory_fallback
         Whether ``:memory:`` was used because no target database was resolved.
+    abandoned
+        Whether execution was abandoned after an uninterruptible timeout left
+        a worker thread still running against the connection. When True, the
+        connection was deliberately never touched again (no COMMIT/ROLLBACK,
+        no ``close()``) because DuckDB serializes operations per connection
+        and doing so could block forever.
 
     Returns
     -------
@@ -144,6 +154,7 @@ class ExecutionReport:
     cell_results: list[CellResult]
     warnings: list[str]
     used_memory_fallback: bool
+    abandoned: bool = False
 
 
 def resolve_target_db(notebook: Notebook, cli_db: str | None) -> tuple[str, bool]:
@@ -182,6 +193,40 @@ def resolve_target_db(notebook: Notebook, cli_db: str | None) -> tuple[str, bool
         if isinstance(path, str) and path:
             return path, False
     return ":memory:", True
+
+
+def _requires_existence_check(db: str) -> bool:
+    """Return whether ``db`` is a plain local path that must already exist.
+
+    Parameters
+    ----------
+    db
+        Target database string as passed to ``duckdb.connect``.
+
+    Returns
+    -------
+    bool
+        True when ``db`` is a plain local filesystem path (not ``:memory:``
+        and not a URI-style connect string), meaning a missing file is
+        almost certainly a typo rather than an intentional new database.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    ``:memory:`` is never a local path. A string matching a URI scheme
+    prefix (``^[A-Za-z][A-Za-z0-9+.-]+:``, i.e. 2+ characters before the
+    colon) is treated as a connect string such as ``md:...`` or ``s3://...``
+    and skipped, so those keep DuckDB's own connection semantics. A single
+    letter followed by ``:`` (e.g. a Windows drive letter like ``C:\\...``)
+    does not match that pattern and is still treated as a local path.
+    """
+    if db == ":memory:":
+        return False
+    return _URI_SCHEME_PATTERN.match(db) is None
 
 
 def contains_transaction_statement(sql: str) -> bool:
@@ -668,6 +713,7 @@ def execute_notebook(
     db: str,
     *,
     allow_writes: bool = False,
+    read_only: bool = False,
     max_rows: int = 1000,
     cell_timeout: float = 300.0,
     interrupt_grace: float = 30.0,
@@ -684,6 +730,13 @@ def execute_notebook(
         Target DuckDB database path or ``":memory:"``.
     allow_writes
         Commit changes instead of rolling them back.
+    read_only
+        Open the target database with DuckDB's read-only mode for a
+        stronger no-writes guarantee than the default rollback-based
+        safety net. Cells that create or modify tables fail with
+        ``CellStatus.ERROR`` instead of being rolled back after the fact.
+        Mutually exclusive with a ``":memory:"`` target, which DuckDB
+        cannot open read-only.
     max_rows
         Maximum result rows to include per cell.
     cell_timeout
@@ -702,6 +755,12 @@ def execute_notebook(
 
     Raises
     ------
+    duckdb_ui_notebook_export.exceptions.TargetDatabaseError
+        Raised when ``db`` is a plain local path that does not exist as a
+        file, which is almost always a mistyped ``--db`` rather than an
+        intentional new database (issue #30); also raised when
+        ``read_only`` is True and ``db`` is ``":memory:"``, which DuckDB
+        cannot open read-only (issue #31).
     duckdb.Error
         Raised when setup or final transaction control fails outside cell
         execution.
@@ -717,8 +776,24 @@ def execute_notebook(
         warnings.append(warning)
         LOGGER.warning("using_memory_database_fallback", database=db, warning=warning)
 
+    if read_only and db == ":memory:":
+        message = (
+            "--read-only requires an existing database file; ':memory:' "
+            "cannot be opened read-only."
+        )
+        raise TargetDatabaseError(message)
+
+    if _requires_existence_check(db) and not Path(db).is_file():
+        message = (
+            f"Target database {db!r} does not exist. --db must point to an "
+            f"existing DuckDB database file."
+        )
+        raise TargetDatabaseError(message)
+
     cell_results: list[CellResult] = []
-    connection = duckdb.connect(db)
+    connection = duckdb.connect(db, read_only=read_only)
+    abandoned = False
+    commit_impossible = False
     try:
         primary_database = _current_database_name(connection)
         if no_external_access:
@@ -755,14 +830,15 @@ def execute_notebook(
                     failed_use_databases,
                 )
 
-            result, error, abandoned = _run_cell_in_thread(
+            result, error, cell_abandoned = _run_cell_in_thread(
                 connection,
                 cell.sql,
                 max_rows,
                 cell_timeout,
                 interrupt_grace,
             )
-            if abandoned:
+            if cell_abandoned:
+                abandoned = True
                 cell_results.append(
                     _empty_result(
                         CellStatus.TIMEOUT,
@@ -790,6 +866,8 @@ def execute_notebook(
                         remaining_count,
                         "Skipped because the transaction is aborted.",
                     )
+                    if allow_writes:
+                        commit_impossible = True
                     break
                 continue
 
@@ -805,6 +883,20 @@ def execute_notebook(
             if result.status is CellStatus.TIMEOUT and _transaction_is_aborted(
                 connection,
             ):
+                if allow_writes:
+                    # Restarting the transaction here would let the final
+                    # COMMIT persist only the writes made after the
+                    # timeout, silently dropping everything before it. With
+                    # --allow-writes the abort is terminal instead: skip the
+                    # remaining cells and roll back everything at the end.
+                    _append_skipped_abort_results(
+                        cell_results,
+                        remaining_count,
+                        "Skipped because the transaction was aborted by a "
+                        "timeout and --allow-writes was set.",
+                    )
+                    commit_impossible = True
+                    break
                 _restart_transaction(connection)
                 _restore_default_database_if_invalid(
                     connection,
@@ -812,21 +904,80 @@ def execute_notebook(
                     warnings,
                 )
 
-        if allow_writes:
+        if abandoned:
+            warning = (
+                "Execution was abandoned after an uninterruptible timeout; the "
+                "database connection was intentionally left open (not "
+                "committed, rolled back, or closed) because a worker thread "
+                "may still be using it."
+            )
+            warnings.append(warning)
+            LOGGER.warning(
+                "connection_left_open_after_abandoned_timeout",
+                warning=warning,
+            )
+            if allow_writes:
+                writes_warning = (
+                    "Nothing was committed: execution was abandoned after an "
+                    "uninterruptible timeout before --allow-writes could "
+                    "commit any changes."
+                )
+                warnings.append(writes_warning)
+                LOGGER.warning(
+                    "no_commit_after_abandoned_timeout",
+                    warning=writes_warning,
+                )
+            return ExecutionReport(
+                cell_results=cell_results,
+                warnings=warnings,
+                used_memory_fallback=used_memory_fallback,
+                abandoned=True,
+            )
+
+        # The per-break-path commit_impossible bookkeeping above can miss
+        # abort states reached through other exits from the cell loop (for
+        # example stop_on_error breaking before the abort check), so the
+        # final commit decision re-probes the transaction state. Committing
+        # an aborted transaction either raises or silently degrades to a
+        # rollback depending on the DuckDB version; both must surface as
+        # the explicit no-commit warning instead. This probe never runs on
+        # the abandoned path, which returned above without touching the
+        # connection.
+        if (
+            allow_writes
+            and not commit_impossible
+            and _transaction_is_aborted(connection)
+        ):
+            commit_impossible = True
+
+        if allow_writes and not commit_impossible:
             connection.execute("COMMIT")
         else:
             connection.execute("ROLLBACK")
+            if allow_writes and commit_impossible:
+                writes_warning = (
+                    "No changes were committed: the transaction was aborted "
+                    "before completion, so all writes were rolled back "
+                    "despite --allow-writes."
+                )
+                warnings.append(writes_warning)
+                LOGGER.warning(
+                    "commit_skipped_after_aborted_transaction",
+                    warning=writes_warning,
+                )
     except Exception:
         try:
             connection.execute("ROLLBACK")
         except duckdb.Error:
             LOGGER.warning("rollback_after_executor_error_failed")
+        connection.close()
         raise
-    finally:
+    else:
         connection.close()
 
     return ExecutionReport(
         cell_results=cell_results,
         warnings=warnings,
         used_memory_fallback=used_memory_fallback,
+        abandoned=False,
     )

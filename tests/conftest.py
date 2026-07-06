@@ -24,6 +24,7 @@ separately.
 from collections.abc import Generator
 from pathlib import Path
 
+import duckdb
 import pytest
 
 
@@ -58,7 +59,7 @@ def tmp_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def fresh_duckdb(tmp_path: Path) -> Generator[Path]:
-    """Provide a path for a fresh temporary DuckDB database file.
+    """Provide a path for a fresh, already-created temporary DuckDB database.
 
     Parameters
     ----------
@@ -68,7 +69,7 @@ def fresh_duckdb(tmp_path: Path) -> Generator[Path]:
     Returns
     -------
     collections.abc.Generator[pathlib.Path]
-        Generator yielding a database file path that does not initially exist.
+        Generator yielding an existing, empty DuckDB database file path.
 
     Raises
     ------
@@ -77,6 +78,11 @@ def fresh_duckdb(tmp_path: Path) -> Generator[Path]:
 
     Notes
     -----
-    Tests are expected to open the yielded path with real DuckDB connections.
+    The file is pre-created (and immediately closed) so tests exercise
+    ``execute_notebook`` against a real, already-existing target database,
+    matching the ``--db`` contract that requires an existing file
+    (``TargetDatabaseError`` otherwise; see issue #30).
     """
-    yield tmp_path / "test.duckdb"
+    path = tmp_path / "test.duckdb"
+    duckdb.connect(str(path)).close()
+    yield path

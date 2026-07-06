@@ -39,6 +39,7 @@ from duckdb_ui_notebook_export.exceptions import (
     NotebookNotFoundError,
     OutputPathError,
     StorageVersionMismatchError,
+    TargetDatabaseError,
     UiDbAccessError,
 )
 from duckdb_ui_notebook_export.executor import (
@@ -304,32 +305,13 @@ def _cell_error_exit_required(report: ExecutionReport, *, stop_on_error: bool) -
     bool
         True when the CLI should return ``ExitCode.CELL_ERROR``.
     """
-    if any(
-        _is_abandoned_result_message(result.error_message)
-        for result in report.cell_results
-    ):
+    if report.abandoned:
         return True
     if any(result.status is CellStatus.TIMEOUT for result in report.cell_results):
         return True
     if stop_on_error:
         return any(result.status is not CellStatus.OK for result in report.cell_results)
     return False
-
-
-def _is_abandoned_result_message(message: str | None) -> bool:
-    """Return whether an execution message marks abandoned work.
-
-    Parameters
-    ----------
-    message
-        Optional cell execution message.
-
-    Returns
-    -------
-    bool
-        True when the message contains ``abandoned``.
-    """
-    return message is not None and "abandoned" in message.lower()
 
 
 def _write_html(path: Path, html: str) -> None:
@@ -439,10 +421,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Stop processing after the first cell error.",
     )
-    parser.add_argument(
+    write_mode_group = parser.add_mutually_exclusive_group()
+    write_mode_group.add_argument(
         "--allow-writes",
         action="store_true",
         help="Commit notebook changes instead of rolling them back.",
+    )
+    write_mode_group.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Open the target database in DuckDB read-only mode for a "
+        "stronger no-writes guarantee. Notebook cells that create or "
+        "modify tables will fail.",
     )
     parser.add_argument(
         "--no-external-access",
@@ -537,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
             notebook,
             target_db,
             allow_writes=args.allow_writes,
+            read_only=args.read_only,
             max_rows=args.max_rows,
             cell_timeout=args.cell_timeout,
             stop_on_error=args.stop_on_error,
@@ -561,6 +552,9 @@ def main(argv: list[str] | None = None) -> int:
     except OutputPathError as error:
         LOGGER.error("output_path_rejected", error=str(error))
         return int(ExitCode.OUTPUT_PATH_REJECTED)
+    except TargetDatabaseError as error:
+        LOGGER.error("target_database_missing", error=str(error))
+        return int(ExitCode.UI_DB_ACCESS_FAILED)
     except ExporterError as error:
         LOGGER.error("export_failed", error=str(error))
         return int(ExitCode.UI_DB_ACCESS_FAILED)

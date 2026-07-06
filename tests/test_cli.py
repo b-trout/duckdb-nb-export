@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from duckdb_ui_notebook_export.cli import (
+    _cell_error_exit_required,
     confirm_execution,
     dedupe_output_path,
     main,
@@ -28,6 +29,7 @@ from duckdb_ui_notebook_export.cli import (
     sanitize_filename,
 )
 from duckdb_ui_notebook_export.exceptions import ExitCode, OutputPathError
+from duckdb_ui_notebook_export.executor import CellResult, CellStatus, ExecutionReport
 from duckdb_ui_notebook_export.models import Cell
 
 
@@ -348,6 +350,201 @@ def test_ut_c_016_main_returns_cell_error_and_partial_html_on_hard_timeout(
 
     assert exit_code == ExitCode.CELL_ERROR
     assert output.exists()
+
+
+def test_ut_c_028_main_returns_ui_db_access_failed_for_missing_target_db(
+    synthetic_ui_db: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-028: A mistyped ``--db`` maps to exit code 4, no file created.
+
+    Notes
+    -----
+    A dedicated exit code is deferred to a later issue; for now this maps
+    to ``ExitCode.UI_DB_ACCESS_FAILED`` with a ``target_database_missing``
+    log event.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    missing_db = tmp_workdir / "typo.duckdb"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(missing_db),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.UI_DB_ACCESS_FAILED
+    assert not missing_db.exists()
+
+
+def test_ut_c_029_read_only_and_allow_writes_are_mutually_exclusive(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-029: ``--read-only`` and ``--allow-writes`` cannot both be set.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "Notebook",
+                "--ui-db",
+                str(synthetic_ui_db),
+                "--db",
+                str(fresh_duckdb),
+                "--output",
+                str(tmp_workdir / "out.html"),
+                "--read-only",
+                "--allow-writes",
+                "--yes",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_ut_c_030_read_only_flag_is_passed_to_executor(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-030: ``--read-only`` completes the export with exit code 0.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--read-only",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+
+
+def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-031: ``--allow-writes`` never partial-commits after an abort.
+
+    Notes
+    -----
+    Before the issue #32 fix, an error that aborted the transaction still
+    hit a final ``COMMIT`` on an aborted transaction; here it is asserted
+    end to end through the CLI: the export completes (writes an HTML file)
+    and the target database file shows no committed table afterward.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    from tests.helpers.synthetic_ui_db import build_ui_db
+
+    try:
+        ui_db = build_ui_db(
+            [
+                _notebook_spec(
+                    "AbortWrites",
+                    _sql_cell("CREATE TABLE abort_source (id INTEGER PRIMARY KEY)"),
+                    _sql_cell("INSERT INTO abort_source VALUES (1)"),
+                    _sql_cell("INSERT INTO abort_source VALUES (1)"),
+                    _sql_cell("SELECT 2 AS skipped_after_abort"),
+                )
+            ],
+            tmp_workdir,
+        )
+    except NotImplementedError as error:
+        pytest.skip(str(error))
+
+    target_db = tmp_workdir / "target.duckdb"
+    import duckdb
+
+    duckdb.connect(str(target_db)).close()
+
+    exit_code = main(
+        [
+            "AbortWrites",
+            "--ui-db",
+            str(ui_db),
+            "--db",
+            str(target_db),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--allow-writes",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    assert (tmp_workdir / "out.html").exists()
+
+    with duckdb.connect(str(target_db)) as connection:
+        row = connection.execute(
+            """
+            SELECT count(*)
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+              AND table_name = 'abort_source'
+            """,
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
+def test_ut_c_027_abandoned_report_requires_cell_error_exit(tmp_path: Path) -> None:
+    """UT-C-027: ``report.abandoned`` True maps to ``ExitCode.CELL_ERROR``.
+
+    Notes
+    -----
+    Replaces the old brittle substring check on error messages
+    (``_is_abandoned_result_message``) with a structured
+    ``ExecutionReport.abandoned`` flag.
+
+    Traceability
+    ------------
+    Issue #28
+    """
+    del tmp_path
+    report = ExecutionReport(
+        cell_results=[
+            CellResult(
+                status=CellStatus.OK,
+                columns=[],
+                rows=[],
+                truncated=False,
+                affected_rows=None,
+                error_message=None,
+            ),
+        ],
+        warnings=[],
+        used_memory_fallback=False,
+        abandoned=True,
+    )
+
+    assert _cell_error_exit_required(report, stop_on_error=False) is True
 
 
 def test_ut_c_022_default_output_path_uses_notebook_name(

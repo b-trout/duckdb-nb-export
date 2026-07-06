@@ -88,6 +88,21 @@ notebooks from sources you would not trust enough to run yourself.
 By default, notebook cells run inside one transaction and the exporter finishes
 with `ROLLBACK`, so changes inside the target database file are not retained.
 Use `--allow-writes` only when you want the exporter to commit those changes.
+For a stronger no-writes guarantee, pass `--read-only` to open the target
+database in DuckDB's read-only mode instead: notebook cells that create or
+modify tables then fail outright rather than being rolled back after the
+fact. `--read-only` and `--allow-writes` are mutually exclusive, and
+`--read-only` cannot be combined with a `:memory:` target (DuckDB cannot open
+`:memory:` read-only). The default remains rollback-based (not read-only)
+because some analytics notebooks create intermediate tables that are expected
+to be rolled back at the end of the run.
+
+With `--allow-writes`, if a cell error or an unrecoverable timeout aborts the
+transaction, the exporter never partially commits: it skips the remaining
+cells, rolls back the whole transaction instead of committing it, and adds a
+warning to the rendered HTML explaining that nothing was committed. This
+avoids silently persisting only the writes made before (or, for a
+timeout-abort, only after) the point of failure.
 
 `ROLLBACK` cannot undo external side effects such as `COPY ... TO` file writes,
 writes to an attached database, remote writes, `INSTALL`, or `LOAD`. The CLI
@@ -103,6 +118,11 @@ If no target database is resolved, execution falls back to `:memory:` and emits
 a warning. DuckDB UI notebook JSON stores database names, not reliable file
 paths, so pass `--db <path>` for exports that depend on existing tables.
 
+`--db <path>` must point to an existing DuckDB database file (or `:memory:`,
+or a URI-style connect string such as `md:...`); a nonexistent local path is
+rejected with exit code 4 instead of silently creating an empty database
+file, which usually means the path was mistyped.
+
 ### CLI reference
 
 The command is registered by `[project.scripts]` as `duckdb-nb-export`.
@@ -114,7 +134,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `-o`, `--output` | Output HTML path. | `<notebook-name>.html` under the allowed base |
 | `--output-dir` | Allowed base directory and default output directory. | Current directory |
 | `--notebook-id` | Export the notebook with this exact ID (from `--list`); use when names are ambiguous. | None |
-| `--db` | Target DuckDB database path for notebook re-execution. | Resolved from notebook metadata, then `:memory:` |
+| `--db` | Target DuckDB database path for notebook re-execution. Must exist (a nonexistent local path is rejected instead of creating a new file). | Resolved from notebook metadata, then `:memory:` |
 | `--ui-db` | Path to DuckDB UI `ui.db`. | `~/.duckdb/extension_data/ui/ui.db` |
 | `--nb-version` | Notebook version identifier to export. | Latest version |
 | `--list` | List notebooks and exit. | Off |
@@ -122,7 +142,8 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--max-rows` | Maximum rows to render per cell. | `1000` |
 | `--cell-timeout` | Per-cell execution timeout in seconds. | `300.0` |
 | `--stop-on-error` | Stop processing after the first cell error. | Off |
-| `--allow-writes` | Commit notebook changes instead of rolling them back. | Off |
+| `--allow-writes` | Commit notebook changes instead of rolling them back. Mutually exclusive with `--read-only`. | Off |
+| `--read-only` | Open the target database in DuckDB read-only mode for a stronger no-writes guarantee. Cells that create or modify tables fail. Mutually exclusive with `--allow-writes`; cannot be combined with a `:memory:` target. | Off |
 | `--no-external-access` | Disable DuckDB external access during execution. | Off |
 | `--require-ui-closed` | Open `ui.db` directly and require DuckDB UI to be closed. | Off |
 | `--yes` | Skip the execution confirmation prompt. | Off |
