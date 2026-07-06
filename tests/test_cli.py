@@ -2186,3 +2186,158 @@ def test_ut_c_068_write_html_atomically_replaces_existing_content(
     assert target.read_text(encoding="utf-8") == html
     leftovers = [p for p in tmp_workdir.iterdir() if p != target]
     assert leftovers == []
+
+
+_REAL_UI_DB_FIXTURE = Path(__file__).parent / "fixtures" / "ui_db" / "ui.db"
+
+
+def _real_ui_db_fixture() -> Path:
+    """Return the real browser-derived ui.db fixture, skipping if absent.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to ``tests/fixtures/ui_db/ui.db``.
+    """
+    if not _REAL_UI_DB_FIXTURE.exists():
+        pytest.skip("real ui.db fixture not present")
+    return _REAL_UI_DB_FIXTURE
+
+
+def test_ut_c_069_list_json_prints_one_parseable_document(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-069: ``--list --json`` prints exactly one JSON array on stdout.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    import json
+    from datetime import datetime
+
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(["--ui-db", str(ui_db), "--list", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    parsed = json.loads(captured.out)
+    assert isinstance(parsed, list)
+    assert len(parsed) == 2
+    for entry in parsed:
+        assert set(entry) == {"name", "notebook_id", "updated_at"}
+        assert entry["name"] == "Untitled Notebook"
+        datetime.fromisoformat(entry["updated_at"])
+
+
+def test_ut_c_070_list_versions_json_prints_one_parseable_document(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-070: ``--list-versions --json`` prints exactly one JSON array.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    import json
+    from datetime import datetime
+
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(
+        [
+            "--ui-db",
+            str(ui_db),
+            "--notebook-id",
+            "e8c419fe-e596-4302-b885-039147139f1a",
+            "--list-versions",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    parsed = json.loads(captured.out)
+    assert isinstance(parsed, list)
+    assert len(parsed) >= 1
+    for entry in parsed:
+        assert set(entry) == {"version_id", "created_at"}
+        datetime.fromisoformat(entry["created_at"])
+
+
+def test_ut_c_071_json_without_list_flags_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-071: ``--json`` without ``--list``/``--list-versions`` exits 2.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--json", "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--json" in captured.err
+
+
+def test_ut_c_072_human_list_table_is_aligned_without_microseconds(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-072: The human ``--list`` table aligns columns, seconds precision.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(["--ui-db", str(ui_db), "--list"])
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    lines = captured.out.splitlines()
+    assert len(lines) == 3
+    header, first_row, second_row = lines
+    assert "2026-07-05 14:26:27" in captured.out
+    assert "479736" not in captured.out
+    id_offset_header = header.index("ID")
+    assert first_row.index("e8c419fe") == id_offset_header
+    assert second_row.index("902baeaf") == id_offset_header
+    updated_offset = header.index("Updated")
+    assert first_row.index("2026-") == updated_offset
+    assert second_row.index("2026-") == updated_offset
+
+
+def test_ut_c_073_human_versions_table_is_aligned_without_microseconds(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-073: The human ``--list-versions`` table drops microseconds.
+
+    Traceability
+    ------------
+    Issue #54
+    """
+    ui_db = _real_ui_db_fixture()
+
+    exit_code = main(
+        [
+            "--ui-db",
+            str(ui_db),
+            "--notebook-id",
+            "e8c419fe-e596-4302-b885-039147139f1a",
+            "--list-versions",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    lines = captured.out.splitlines()
+    assert lines[0].startswith("Version")
+    assert "543609" not in captured.out
+    assert "479736" not in captured.out
+    created_offset = lines[0].index("Created")
+    for row in lines[1:]:
+        assert row.index("2026-") == created_offset

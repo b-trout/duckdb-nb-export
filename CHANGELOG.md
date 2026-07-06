@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--version` flag printing the tool version and the DuckDB version in
   use, then exiting 0
   ([#53](https://github.com/b-trout/duckdb-nb-export/issues/53)).
+- `--json` flag for `--list` and `--list-versions`: prints exactly one
+  JSON array on stdout (`{"name", "notebook_id", "updated_at"}` for
+  `--list`; `{"version_id", "created_at"}` for `--list-versions`) with
+  ISO-8601 timestamps, so scripts can parse listings without scraping the
+  table. `--json` without one of those flags is an argparse error (exit 2)
+  ([#54](https://github.com/b-trout/duckdb-nb-export/issues/54)).
 - `--force` flag to overwrite the output file if it exists instead of
   writing to a numeric-suffixed sibling path. The default
   (dedupe-suffixing, never overwriting) is unchanged; with `--force` no
@@ -86,6 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The human-readable `--list` and `--list-versions` tables now pad each
+  column to the width of its widest value (instead of tab separation) and
+  render timestamps at seconds precision without microseconds
+  ([#54](https://github.com/b-trout/duckdb-nb-export/issues/54)).
 - The execution confirmation prompt now shows a compact header naming the
   notebook, version, cell count, target database, write mode, and output
   path, and previews each cell as a `CREATE SECRET`-masked excerpt (first

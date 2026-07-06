@@ -22,6 +22,7 @@ and orchestration across the reader, executor, and renderer layers.
 """
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -415,8 +416,66 @@ def _direct_stderr_logger() -> structlog.BoundLogger:
     return structlog.wrap_logger(structlog.PrintLogger(sys.stderr))
 
 
+def _format_timestamp(value: datetime) -> str:
+    """Format a timestamp for human table output at seconds precision.
+
+    Parameters
+    ----------
+    value
+        Timestamp to format.
+
+    Returns
+    -------
+    str
+        ``YYYY-MM-DD HH:MM:SS``-style text without microseconds.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+    """
+    return value.isoformat(sep=" ", timespec="seconds")
+
+
+def _write_table(headers: list[str], rows: list[list[str]]) -> None:
+    """Write an aligned plain-text table to stdout.
+
+    Parameters
+    ----------
+    headers
+        Column header labels.
+    rows
+        Data rows; each row must have one value per header.
+
+    Returns
+    -------
+    None
+        The table is written to stdout.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Each column is left-padded to the width of its widest value (header
+    included) and columns are separated by two spaces; trailing whitespace
+    is stripped per line (issue #54).
+    """
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows)) if rows else len(header)
+        for index, header in enumerate(headers)
+    ]
+    for line_values in [headers, *rows]:
+        line = "  ".join(
+            value.ljust(width) for value, width in zip(line_values, widths, strict=True)
+        )
+        sys.stdout.write(line.rstrip() + "\n")
+
+
 def _write_notebook_table(notebooks: Iterable[NotebookInfo]) -> None:
-    """Write notebook metadata as a simple table to stdout.
+    """Write notebook metadata as an aligned table to stdout.
 
     Parameters
     ----------
@@ -428,15 +487,21 @@ def _write_notebook_table(notebooks: Iterable[NotebookInfo]) -> None:
     None
         The table is written to stdout.
     """
-    sys.stdout.write("Notebook\tID\tUpdated\n")
-    for notebook in notebooks:
-        sys.stdout.write(
-            f"{notebook.name}\t{notebook.notebook_id}\t{notebook.updated_at}\n"
-        )
+    _write_table(
+        ["Notebook", "ID", "Updated"],
+        [
+            [
+                notebook.name,
+                notebook.notebook_id,
+                _format_timestamp(notebook.updated_at),
+            ]
+            for notebook in notebooks
+        ],
+    )
 
 
 def _write_version_table(versions: Iterable[VersionInfo]) -> None:
-    """Write notebook version metadata as a simple table to stdout.
+    """Write notebook version metadata as an aligned table to stdout.
 
     Parameters
     ----------
@@ -448,9 +513,70 @@ def _write_version_table(versions: Iterable[VersionInfo]) -> None:
     None
         The table is written to stdout.
     """
-    sys.stdout.write("Version\tCreated\n")
-    for version in versions:
-        sys.stdout.write(f"{version.version_id}\t{version.created_at}\n")
+    _write_table(
+        ["Version", "Created"],
+        [
+            [version.version_id, _format_timestamp(version.created_at)]
+            for version in versions
+        ],
+    )
+
+
+def _write_notebook_json(notebooks: Iterable[NotebookInfo]) -> None:
+    """Write notebook metadata as a single JSON array to stdout.
+
+    Parameters
+    ----------
+    notebooks
+        Notebook metadata records to serialize.
+
+    Returns
+    -------
+    None
+        Exactly one JSON document is written to stdout.
+
+    Notes
+    -----
+    Timestamps are serialized in ISO 8601 form via ``isoformat`` so scripts
+    can parse them without guessing a format (issue #54).
+    """
+    payload = [
+        {
+            "name": notebook.name,
+            "notebook_id": notebook.notebook_id,
+            "updated_at": notebook.updated_at.isoformat(),
+        }
+        for notebook in notebooks
+    ]
+    sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+
+
+def _write_version_json(versions: Iterable[VersionInfo]) -> None:
+    """Write notebook version metadata as a single JSON array to stdout.
+
+    Parameters
+    ----------
+    versions
+        Version metadata records to serialize.
+
+    Returns
+    -------
+    None
+        Exactly one JSON document is written to stdout.
+
+    Notes
+    -----
+    Timestamps are serialized in ISO 8601 form via ``isoformat`` so scripts
+    can parse them without guessing a format (issue #54).
+    """
+    payload = [
+        {
+            "version_id": version.version_id,
+            "created_at": version.created_at.isoformat(),
+        }
+        for version in versions
+    ]
+    sys.stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
 def _utc_now_z() -> str:
@@ -867,6 +993,12 @@ def _run(argv: list[str] | None = None) -> int:
         help="List versions for the selected notebook and exit.",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With --list or --list-versions, print the listing as a JSON "
+        "array instead of a table.",
+    )
+    parser.add_argument(
         "--max-rows",
         type=_positive_int_arg,
         default=1000,
@@ -960,19 +1092,28 @@ def _run(argv: list[str] | None = None) -> int:
             "notebook_name is required unless --list or --notebook-id is used."
         )
 
+    if args.json and not (args.list or args.list_versions):
+        parser.error("--json requires --list or --list-versions.")
+
     try:
         if args.list:
-            _write_notebook_table(list_notebooks(Path(args.ui_db)))
+            notebooks = list_notebooks(Path(args.ui_db))
+            if args.json:
+                _write_notebook_json(notebooks)
+            else:
+                _write_notebook_table(notebooks)
             return int(ExitCode.OK)
 
         if args.list_versions:
-            _write_version_table(
-                list_versions(
-                    Path(args.ui_db),
-                    args.notebook_name,
-                    notebook_id=args.notebook_id,
-                )
+            versions = list_versions(
+                Path(args.ui_db),
+                args.notebook_name,
+                notebook_id=args.notebook_id,
             )
+            if args.json:
+                _write_version_json(versions)
+            else:
+                _write_version_table(versions)
             return int(ExitCode.OK)
 
         if args.notebook_name is not None:

@@ -185,6 +185,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--nb-version` | Notebook version identifier to export. Must be an integer string; an unknown (but well-formed) version is reported as exit code 1 (see `--list-versions`). | Latest version |
 | `--list` | List notebooks and exit. | Off |
 | `--list-versions` | List versions for the selected notebook and exit. | Off |
+| `--json` | With `--list` or `--list-versions`, print the listing as a JSON array instead of a table. | Off |
 | `--max-rows` | Maximum rows to render per cell. Must be a positive integer (>= 1). | `1000` |
 | `--cell-timeout` | Per-cell execution timeout in seconds. Must be a positive, finite number. | `300.0` |
 | `--interrupt-grace` | Seconds to wait after a timeout interrupt before abandoning execution. Must be a positive, finite number. | `30.0` |
