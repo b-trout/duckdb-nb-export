@@ -106,7 +106,8 @@
 ### 2.4 storage version不整合フィクスチャ
 
 - storage version不整合時のエラーメッセージ検証(UT-R-013、design doc 6.2#10・8章)には、「ツールが依存する `duckdb` パッケージより新しいstorage versionで作成されたui.db」フィクスチャが必要である。より新しいDuckDBバージョンで事前生成したDBファイルを `tests/fixtures/storage_version/` 配下に保持する。
-- このフィクスチャは時間経過とともに「新しくない」状態になる。テスト実行環境の `duckdb` パッケージが十分新しくなり、フィクスチャのstorage versionを問題なく開けるようになった場合は、当該テストを `pytest.skip` する(skip理由に「フィクスチャの再生成が必要」であることを明示する)運用とする。skipの常態化を検知した時点で、より新しいDuckDBでフィクスチャを再生成する。
+- このフィクスチャは時間経過とともに「新しくない」状態になる。テスト実行環境の `duckdb` パッケージが十分新しくなり、フィクスチャのstorage versionを問題なく開けるようになった場合は、当該テストを `pytest.skip` する(skip理由に「フィクスチャの再生成が必要」であることを明示する)運用とする。skipの常態化を検知した時点で、より新しいDuckDBでフィクスチャを再生成する(このskip判定はUT-R-013に実装済み)。
+- **フィクスチャ取得済み(2026-07-05)**: `tests/fixtures/storage_version/ui_newer_storage.db` を `scripts/regenerate_storage_version_fixture.py` で生成しコミットした。生成時点のPyPIには最低サポートバージョン(1.5.4)より新しい安定版が存在しなかったため、**nightly devビルド(1.6.0.dev280)+ `STORAGE_VERSION 'latest'`** で開発中フォーマット(version number 999)として書き出している。999は開発版マーカーであり、以後の安定版リリース(連番のstorage version)では読めない状態が長期間維持されるため、フィクスチャの陳腐化は当面発生しない。ファイルはui.dbと同一のスキーマ(design doc 6.3#9)で構築しており、実際のユーザーが遭遇する「新しいUIのui.dbを古いduckdbで開いた」失敗を模している。
 
 ---
 
