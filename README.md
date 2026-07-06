@@ -5,10 +5,11 @@ to a single static HTML file by re-executing notebook cells against a target
 database. It fills the current gap where DuckDB UI notebooks do not have a
 Jupyter `nbconvert` equivalent.
 
-Status: alpha, Phase 1, CLI only. The package is not published on PyPI yet.
-It depends on DuckDB UI's unofficial internal `ui.db` schema, so a DuckDB UI
-update can break notebook discovery or parsing. This is an unofficial
-third-party tool, not affiliated with DuckDB, DuckDB Labs, or MotherDuck.
+Status: alpha, Phase 1, CLI only. Published on PyPI as
+[`duckdb-nb-export`](https://pypi.org/project/duckdb-nb-export/). It depends
+on DuckDB UI's unofficial internal `ui.db` schema, so a DuckDB UI update can
+break notebook discovery or parsing. This is an unofficial third-party tool,
+not affiliated with DuckDB, DuckDB Labs, or MotherDuck.
 
 ## For users
 
@@ -25,23 +26,18 @@ third-party tool, not affiliated with DuckDB, DuckDB Labs, or MotherDuck.
 
 ### Installation
 
-Until PyPI publication, install from a repository URL:
-
 ```bash
-uv tool install git+<repository-url>
+uv tool install duckdb-nb-export
 ```
 
 or:
 
 ```bash
-pip install git+<repository-url>
-```
-
-The intended future install command is:
-
-```bash
 pip install duckdb-nb-export
 ```
+
+To install the latest unreleased code from this repository instead, use
+`uv tool install git+<repository-url>` or `pip install git+<repository-url>`.
 
 ### Quick start
 
