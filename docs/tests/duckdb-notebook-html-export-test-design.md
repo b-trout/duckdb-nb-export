@@ -1,6 +1,6 @@
 # テスト設計書: DuckDB UI Notebook → HTML Export ツール
 
-- ステータス: テストスイート実装済み(110 passed / 5 skipped)
+- ステータス: テストスイート実装済み(112 passed / 5 skipped)
 - 作成日: 2026-07-05
 - 改訂: 2026-07-05(notebook JSONスキーマ実機調査(design doc 6.2#1/#3)完了を反映。2.1節・2.2節のブロック状況、8.2節のブロック理由、6.2節AT-010の内容を更新。新たな設計判断はなし)
 - 改訂: 2026-07-05(整合性レビュー反映。実装済みテストスイートとの不整合を解消。新たな設計判断はなし)
@@ -138,6 +138,8 @@
 | UT-R-017 | 同fixtureで、2notebookが共有する表示名 `"Untitled Notebook"` を指定して `load_notebook` を呼ぶと `AmbiguousNotebookError`(`--notebook-id` への誘導を含む)になること | design doc 4.1節, 7章 |
 | UT-R-018 | 同fixtureで、`notebook_id` 指定により表示名衝突があっても一意に解決でき、最新版(3セル、うち1つは `query IS NULL` の空セル)が読めること | design doc 4.1節, 6.3#9, 7章 |
 | UT-R-019 | 同fixtureで、内部スラッグ(`notebooks.name`、例 `notebook_JKS7o1wU06Fs`)をnotebook名として渡した場合も、表示名照合が0件のときのフォールバックにより一意に解決できること | design doc 4.1節, 6.3#9 |
+| UT-R-020 | 1つのnotebookに `expires IS NULL` のバージョン行が複数存在しても(ライブDBスナップショット等の防御ケース)、`list_notebooks` の一覧が重複せず、表示名解決が誤って曖昧エラーにならないこと(最新の `created` の行を決定的に採用) | design doc 4.1節, 6.3#9 |
+| UT-R-021 | バージョン行を1つも持たないnotebookは一覧から除外され(従来のinner JOIN挙動の踏襲)、`list_notebooks` が例外で失敗しないこと | design doc 4.1節 |
 
 ### 3.2 Executor層
 

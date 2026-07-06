@@ -68,9 +68,10 @@ the command can read notebooks while DuckDB UI is still running. Use
 
 Notebook name matching resolves against the display name shown in DuckDB UI
 (the current notebook title) first, and falls back to DuckDB UI's internal
-notebook identifier only if no title matches. `--list` always shows the
-display name. If several notebooks share the same display name, pass
-`--notebook-id <id>` (from `--list`) to select one unambiguously.
+notebook name (the `notebook_...` slug stored in `notebooks.name`) only if
+no title matches. `--list` always shows the display name. If several
+notebooks share the same display name, pass `--notebook-id <id>` (from
+`--list`) to select one unambiguously.
 
 ### How it works
 

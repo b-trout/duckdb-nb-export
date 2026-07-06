@@ -294,6 +294,15 @@ def _list_notebooks_with_slugs(
     transient synthetic fixture that only sets ``expires`` on non-final
     versions) falls back to the most recently created version's title so
     resolution still degrades gracefully instead of failing outright.
+
+    A notebook with no ``notebook_versions`` rows at all is excluded from
+    the result, matching the pre-existing inner-join behavior, since there
+    is no title or timestamp to report. Should more than one ``expires IS
+    NULL`` row ever coexist for a notebook (for example when the default
+    read path snapshots a live database mid-write), a defensive
+    ``DISTINCT ON`` pick of the newest such row (by ``created`` then
+    ``version`` descending) guarantees ``list_notebooks`` and name
+    resolution never see duplicate rows for the same notebook.
     """
     cursor = connection.execute(
         """
@@ -303,14 +312,19 @@ def _list_notebooks_with_slugs(
           coalesce(latest.created, fallback.created) AS updated_at,
           n.name AS slug
         FROM notebooks AS n
-        LEFT JOIN notebook_versions AS latest
-          ON latest.notebook_id = n.id AND latest.expires IS NULL
-        LEFT JOIN (
+        JOIN (
           SELECT DISTINCT ON (notebook_id) notebook_id, title, created
           FROM notebook_versions
           ORDER BY notebook_id, created DESC, version DESC
         ) AS fallback
           ON fallback.notebook_id = n.id
+        LEFT JOIN (
+          SELECT DISTINCT ON (notebook_id) notebook_id, title, created
+          FROM notebook_versions
+          WHERE expires IS NULL
+          ORDER BY notebook_id, created DESC, version DESC
+        ) AS latest
+          ON latest.notebook_id = n.id
         ORDER BY updated_at DESC, display_name, notebook_id
         """
     )
