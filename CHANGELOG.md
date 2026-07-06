@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `pygments` dependency floor was raised from `>=2` to `>=2.19`.
+  CI now verifies every declared dependency floor by resolving direct
+  dependencies at their lowest allowed versions and running the full
+  test suite; that check found the old floor produced HTML styling
+  that no longer matches current output
+  ([#9](https://github.com/b-trout/duckdb-nb-export/issues/9)).
 - `--help` now shows the default value for `--max-rows`, `--cell-timeout`,
   `-o`/`--output`, `--output-dir`, and `--db` instead of documenting them
   only in the README
