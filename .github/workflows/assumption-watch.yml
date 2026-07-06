@@ -75,7 +75,7 @@ jobs:
         # Guard on the pytest step specifically: a checkout/setup failure is
         # CI trouble, not upstream drift, and must not file a drift issue.
         if: failure() && steps.assumptions.outcome == 'failure'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
