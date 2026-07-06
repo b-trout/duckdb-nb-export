@@ -1012,3 +1012,75 @@ def test_ut_c_039_interrupt_grace_reaches_execute_notebook(
 
     assert exit_code == ExitCode.OK
     assert captured_kwargs["interrupt_grace"] == 12.5
+
+
+def test_ut_c_040_main_prints_final_output_path_on_success(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-040: A successful export prints exactly the final path to stdout.
+
+    Traceability
+    ------------
+    Issue #35
+    """
+    output = tmp_workdir / "out.html"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{output}\n"
+
+
+def test_ut_c_041_main_warns_and_prints_deduped_path_when_target_exists(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-041: Prints the deduped path and warns on stderr before writing.
+
+    Traceability
+    ------------
+    Issue #35
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+    deduped = tmp_workdir / "out-1.html"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{deduped}\n"
+    assert "output_path_deduplicated" in captured.err
+    assert str(output) in captured.err
+    assert str(deduped) in captured.err
+    assert deduped.exists()

@@ -634,7 +634,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         html = render_html(notebook, report, metadata)
         final_output_path = dedupe_output_path(output_path)
+        if final_output_path != output_path:
+            _direct_stderr_logger().warning(
+                "output_path_deduplicated",
+                requested=str(output_path),
+                actual=str(final_output_path),
+            )
         _write_html(final_output_path, html)
+        sys.stdout.write(f"{final_output_path}\n")
         if _cell_error_exit_required(
             report,
             stop_on_error=args.stop_on_error,

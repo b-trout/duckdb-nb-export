@@ -150,7 +150,11 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--require-ui-closed` | Open `ui.db` directly and require DuckDB UI to be closed. | Off |
 | `--yes` | Skip the execution confirmation prompt. | Off |
 
-Existing output files are not overwritten; a numeric suffix is added.
+Existing output files are not overwritten; a numeric suffix is added. On
+success, the CLI prints the final output path (after any numeric-suffix
+deduplication) as a single line to stdout, so scripts can capture it
+directly; a renamed path also emits a warning naming the requested and
+actual paths on stderr.
 
 If `-o`/`--output` points outside the allowed base directory (the current
 directory by default, or the directory passed to `--output-dir`), the export

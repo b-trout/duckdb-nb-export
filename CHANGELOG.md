@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through `execute_notebook`'s `interrupt_grace` parameter (default: `30.0`,
   unchanged)
   ([#37](https://github.com/b-trout/duckdb-nb-export/issues/37)).
+- On success, the CLI now prints the final output path (after any
+  numeric-suffix deduplication) as a single line to stdout, so scripts can
+  capture it without re-deriving it from `-o`/`--output-dir`. When the
+  requested path already exists and a numeric suffix is applied, a
+  structured `output_path_deduplicated` warning naming the requested and
+  actual paths is now emitted on stderr before the file is written
+  ([#35](https://github.com/b-trout/duckdb-nb-export/issues/35)).
 
 ### Changed
 
