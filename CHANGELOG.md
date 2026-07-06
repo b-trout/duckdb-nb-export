@@ -14,35 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowers it to `DEBUG`, and the default remains `INFO`. The two flags are
   mutually exclusive
   ([#55](https://github.com/b-trout/duckdb-nb-export/issues/55)).
-
-### Fixed
-
-- Cell failures are no longer silent on stderr. Previously a failing cell
-  produced exit code 2 with no on-screen indication of what failed, even
-  though README already claimed stderr reporting. The CLI now logs a
-  `cell_failed` event per non-OK cell result (1-based cell index, status,
-  and a truncated error message) plus a `cells_failed_summary` event
-  naming the output path, both before the process exits; this happens
-  whenever a cell fails, including under `--no-fail-on-cell-error` (which
-  still exits 0)
-  ([#44](https://github.com/b-trout/duckdb-nb-export/issues/44)).
-- The `notebook_name_sanitized_for_output` warning no longer fires for
-  every notebook name that merely contains a space. Only names that need
-  more than whitespace-to-underscore substitution (for example a path
-  separator like `/` or `\`, or a colon `:`) now emit the warning; a name
-  like `Untitled Notebook` silently becomes `Untitled_Notebook.html` as
-  before, without a spurious warning on every export
-  ([#47](https://github.com/b-trout/duckdb-nb-export/issues/47)).
-- Log output no longer emits ANSI color escape codes when stderr is not a
-  terminal (for example when piped or redirected to a file), and the
-  `NO_COLOR` environment variable (any value, including an empty string,
-  per [no-color.org](https://no-color.org/)) now disables color output even
-  when stderr is a terminal. Previously `structlog`'s `ConsoleRenderer` always
-  emitted color codes regardless of the output stream or `NO_COLOR`
-  ([#46](https://github.com/b-trout/duckdb-nb-export/issues/46)).
-
-### Added
-
 - The exported HTML footer now records the target database and write mode
   used for the export, alongside the existing timestamp/version fields.
   The target database line shows a privacy-safe display form only:
@@ -223,6 +194,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `db == ":memory:"` and warned even when `:memory:` was requested
   explicitly rather than being a fallback
   ([#49](https://github.com/b-trout/duckdb-nb-export/issues/49)).
+- Cell failures are no longer silent on stderr. Previously a failing cell
+  produced exit code 2 with no on-screen indication of what failed, even
+  though README already claimed stderr reporting. The CLI now logs a
+  `cell_failed` event per non-OK cell result (1-based cell index, status,
+  and a truncated error message) plus a `cells_failed_summary` event
+  naming the output path, both before the process exits; this happens
+  whenever a cell fails, including under `--no-fail-on-cell-error` (which
+  still exits 0)
+  ([#44](https://github.com/b-trout/duckdb-nb-export/issues/44)).
+- The `notebook_name_sanitized_for_output` warning no longer fires for
+  every notebook name that merely contains a space. Only names that need
+  more than whitespace-to-underscore substitution (for example a path
+  separator like `/` or `\`, or a colon `:`) now emit the warning; a name
+  like `Untitled Notebook` silently becomes `Untitled_Notebook.html` as
+  before, without a spurious warning on every export
+  ([#47](https://github.com/b-trout/duckdb-nb-export/issues/47)).
+- Log output no longer emits ANSI color escape codes when stderr is not a
+  terminal (for example when piped or redirected to a file), and the
+  `NO_COLOR` environment variable (any value, including an empty string,
+  per [no-color.org](https://no-color.org/)) now disables color output even
+  when stderr is a terminal. Previously `structlog`'s `ConsoleRenderer` always
+  emitted color codes regardless of the output stream or `NO_COLOR`
+  ([#46](https://github.com/b-trout/duckdb-nb-export/issues/46)).
 - Stale `ui.db` snapshot directories left behind by a crashed or killed
   process no longer accumulate indefinitely: each snapshot-path call to
   `open_ui_db` now opportunistically removes snapshot directories older
