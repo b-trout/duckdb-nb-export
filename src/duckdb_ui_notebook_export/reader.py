@@ -371,7 +371,11 @@ def _to_internal_notebook(
         name=name,
         version_id=str(version),
         cells=[
-            Cell(cell_type="sql", sql=stored_cell.query or "")
+            Cell(
+                cell_type="sql",
+                sql=stored_cell.query or "",
+                use_database=stored_cell.use_database,
+            )
             for stored_cell in stored_notebook.cells
         ],
         database_info=_database_info(stored_notebook),
