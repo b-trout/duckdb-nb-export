@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--help` now shows the default value for `--max-rows`, `--cell-timeout`,
+  `-o`/`--output`, `--output-dir`, and `--db` instead of documenting them
+  only in the README
+  ([#15](https://github.com/b-trout/duckdb-nb-export/issues/15)).
+- The error for a declined non-interactive confirmation now names the fix:
+  `Execution confirmation required; pass --yes to run non-interactively.`
+  ([#15](https://github.com/b-trout/duckdb-nb-export/issues/15)).
+
 ## [0.0.1] - 2026-07-05
 
 Initial alpha release.
