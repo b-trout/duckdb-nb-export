@@ -360,7 +360,21 @@ def _to_internal_notebook(
     version: int,
     raw_json: str,
 ) -> Notebook:
-    """Parse stored JSON and build an internal notebook model."""
+    """Parse stored JSON and build an internal notebook model.
+
+    Notes
+    -----
+    ``cell_type`` is always ``"sql"`` because stored notebook format v3 has
+    no field that records whether a cell was displayed as a chart in DuckDB
+    UI: ``StoredCell`` only carries ``query``/``cellId``/``useDatabase``/
+    ``isActive``/``runMode``, and ``runMode`` is an execution mode
+    (``"default"`` or ``"instant"``), not a display mode. This was
+    confirmed by a full review of the DuckDB UI frontend bundle (see
+    design doc 6.2#2 / GitHub issue #6): there is no chart-persistence
+    mechanism anywhere, so chart cells are indistinguishable from SQL
+    cells in stored data and are exported as ordinary SQL cells (issue
+    #36).
+    """
     try:
         stored_notebook = StoredNotebook.model_validate(json.loads(raw_json))
     except (json.JSONDecodeError, ValidationError) as error:

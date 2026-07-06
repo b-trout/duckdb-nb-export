@@ -446,6 +446,13 @@ def _render_unexecuted_cell(sql: str) -> _RenderedCell:
 
 def _render_cell(sql: str, cell_type: str, result: CellResult) -> _RenderedCell:
     status_message = _status_message(result)
+    # This branch is unreachable for notebooks loaded via reader.py:
+    # stored notebook format v3 has no field distinguishing chart cells
+    # from SQL cells, so reader._to_internal_notebook always sets
+    # cell_type="sql" (see its docstring and issue #36). It remains
+    # reachable only for programmatic callers that construct a Cell with
+    # cell_type="chart" directly (for example the renderer's own unit
+    # tests), so it is kept rather than removed.
     chart_note = (
         "Chart rendering is not supported: DuckDB UI does not persist chart "
         "configuration, so there is no stored chart to reproduce; results "

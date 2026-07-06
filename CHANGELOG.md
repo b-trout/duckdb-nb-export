@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Documented that chart cells cannot be detected in stored notebook data
+  at all: stored notebook format v3 does not record whether a cell was
+  displayed as a chart in DuckDB UI, so exported HTML always shows such
+  cells as ordinary SQL cells. The renderer's chart-fallback note is
+  therefore unreachable for notebooks read from `ui.db` and is only
+  exercised by programmatic callers that construct a `Cell` with
+  `cell_type="chart"` directly
+  ([#36](https://github.com/b-trout/duckdb-nb-export/issues/36)).
+
 ### Fixed
 
 - Stale `ui.db` snapshot directories left behind by a crashed or killed
