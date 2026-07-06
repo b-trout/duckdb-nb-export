@@ -1060,3 +1060,38 @@ def test_ut_r_025_run_mode_cells_load_as_sql_and_render_no_chart_note(
     )
 
     assert "Chart rendering is not supported" not in html
+
+
+def test_ut_r_026_unknown_nb_version_reports_display_name_and_hint(
+    synthetic_ui_db: Path,
+) -> None:
+    """UT-R-026: an unknown ``--nb-version`` names the resolved notebook.
+
+    Parameters
+    ----------
+    synthetic_ui_db
+        Generated DuckDB UI database fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that ``load_notebook`` raises
+        ``NotebookNotFoundError`` (not ``UiDbAccessError``) for an unknown
+        version, that the message uses the resolved notebook's *display*
+        name rather than a stringified ``None``, and that it points at
+        ``--list-versions``.
+
+    Notes
+    -----
+    Traceability: GitHub issue #48. Previously an unknown version raised
+    ``UiDbAccessError`` (mapped to exit code 4) whose message could read
+    "Notebook None version 99 was not found." when the caller only passed
+    ``--notebook-id`` and left the raw ``name`` argument as ``None``.
+    """
+    with pytest.raises(NotebookNotFoundError) as error_info:
+        load_notebook(synthetic_ui_db, "reader-notebook", version_id="99")
+
+    message = str(error_info.value)
+    assert "reader-notebook" in message
+    assert "None" not in message
+    assert "--list-versions" in message

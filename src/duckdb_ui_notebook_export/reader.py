@@ -764,9 +764,12 @@ def load_notebook(
 
         rows = list(_iter_rows(cursor))
         if not rows:
-            raise UiDbAccessError(
-                f"Notebook {name!r} version {version_id or 'current'} was not found."
+            error = NotebookNotFoundError(
+                f"Notebook {notebook.name!r} version {version_id or 'current'} "
+                "was not found. Use --list-versions to see available versions."
             )
+            error.available_names = [notebook.name]
+            raise error
         version, raw_json = rows[0]
         return _to_internal_notebook(
             name=notebook.name,
