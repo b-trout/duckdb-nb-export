@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -142,6 +143,13 @@ def synthetic_ui_db(tmp_path: Path) -> Path:
         pytest.skip(str(error))
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows cannot copy a locked DuckDB file (design doc 6.3#11); "
+        "snapshot-while-UI-running is Linux/macOS only"
+    ),
+)
 def test_ut_r_001_wal_copied_together(tmp_path: Path) -> None:
     """UT-R-001: copy_ui_db copies ui.db and its companion WAL.
 

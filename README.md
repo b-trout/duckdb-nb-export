@@ -16,8 +16,12 @@ third-party tool, not affiliated with DuckDB, DuckDB Labs, or MotherDuck.
 
 - Python >=3.11
 - `duckdb>=1.5.4`
-- Linux or macOS. Windows is not verified and is outside the Phase 1 support
-  target.
+- Linux and macOS are fully supported. Windows is supported on a
+  best-effort basis: reading `ui.db` while DuckDB UI is running is not
+  possible on Windows because of OS file locking (copying a file another
+  process holds open for read-write fails there). Close DuckDB UI before
+  exporting on Windows; once the UI is closed, both the default snapshot
+  path and `--require-ui-closed` work.
 
 ### Installation
 

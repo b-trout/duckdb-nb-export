@@ -247,6 +247,13 @@ def _execute_and_render(
     return render_html(notebook, report, _metadata(notebook, report.warnings))
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows cannot copy a locked DuckDB file (design doc 6.3#11); "
+        "snapshot-while-UI-running is Linux/macOS only"
+    ),
+)
 def test_it_001_snapshot_reader_succeeds_while_rw_process_holds_ui_db(
     locked_ui_db: Path,
 ) -> None:
@@ -539,6 +546,13 @@ def test_it_008_copy_to_file_survives_default_rollback(
     assert copy_path.read_text(encoding="utf-8") == "value\n1\n"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows cannot copy a locked DuckDB file (design doc 6.3#11); "
+        "snapshot-while-UI-running is Linux/macOS only"
+    ),
+)
 def test_it_009_cli_requires_prompt_for_copy_to_side_effect(
     tmp_path: Path,
 ) -> None:

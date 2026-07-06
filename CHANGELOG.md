@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Windows support on a best-effort basis, with `windows-latest` added to
+  CI: reading `ui.db` while DuckDB UI is running is verified impossible on
+  Windows due to OS file locking, so the UI must be closed before
+  exporting there; the handful of tests that depend on the locked-copy
+  behavior are skipped on Windows accordingly
+  ([#5](https://github.com/b-trout/duckdb-nb-export/issues/5)).
 - Best-effort database-name replay: the notebook's stored
   `currentDatabase` is applied with `USE` after the transaction starts,
   and a cell's stored `useDatabase` is applied before that cell runs.

@@ -336,6 +336,13 @@ def test_at_003_error_continuation_and_abort_state() -> None:
         con.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows cannot copy a locked DuckDB file (design doc 6.3#11); "
+        "snapshot-while-UI-running is Linux/macOS only"
+    ),
+)
 def test_at_004_cross_process_read_only_and_read_write_are_locked(
     tmp_path: Path,
 ) -> None:
@@ -373,6 +380,13 @@ def test_at_004_cross_process_read_only_and_read_write_are_locked(
     assert "Conflicting lock is held" in read_write["message"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows cannot copy a locked DuckDB file (design doc 6.3#11); "
+        "snapshot-while-UI-running is Linux/macOS only"
+    ),
+)
 def test_at_005_locked_database_body_copy_omits_wal_only_changes(
     tmp_path: Path,
 ) -> None:

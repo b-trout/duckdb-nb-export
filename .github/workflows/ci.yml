@@ -76,13 +76,21 @@ jobs:
 
   test:
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # windows-latest defaults to pwsh; the version-select and pytest
+        # steps below use bash syntax, so pin bash on every OS.
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        # Phase 1 supports Linux/macOS only; Windows is out of scope until
-        # the locked-file-copy behavior is verified there (design doc 8 章,
-        # ADR-008, 6.2#8).
-        os: [ubuntu-latest, macos-latest]
+        # Windows is supported on a best-effort basis: reading ui.db while
+        # the DuckDB UI is running relies on an OS-level file copy, which is
+        # verified impossible on Windows while another process holds a RW
+        # connection (design doc 6.2#8, 6.3#11, ADR-008). The handful of
+        # tests that depend on that locked-copy behavior are skipped on
+        # win32 via skipif markers; everything else runs on all three OSes.
+        os: [ubuntu-latest, macos-latest, windows-latest]
         # "3" resolves to the latest available Python 3.x release.
         python-version: ["3.11", "3.12", "3"]
         # Lowest supported duckdb (pyproject.toml's floor) plus the newest

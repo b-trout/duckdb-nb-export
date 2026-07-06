@@ -1,0 +1,46 @@
+name: Windows verification
+
+# Manual re-verification workflow for the Windows locked-copy behavior
+# documented in GitHub issue #5 (design doc 6.2#8, 6.3#11): an OS-level copy
+# of a locked ui.db (+wal) is confirmed impossible on Windows while another
+# process holds a RW connection, and is not expected to change. Runs the
+# dedicated verification script, then the full test suite informationally,
+# so the recorded verdict can be re-checked by hand (e.g. on a new DuckDB or
+# Windows runner image) without being part of the regular PR CI.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  locked-copy:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --python 3.11 --group dev
+
+      - name: Verify locked-file copy behavior
+        # Result read from the log; a known-bad verdict is still a verdict,
+        # and must not stop the suite mapping below.
+        continue-on-error: true
+        shell: bash
+        run: uv run python scripts/verify_windows_lock_copy.py
+
+      - name: Run full test suite (informational)
+        # Windows is a best-effort supported platform (design doc 8 章); the
+        # locked-copy tests are expected to be skipped here via skipif
+        # markers, and this step only maps any other gap. Failures here must
+        # not mask the locked-copy verdict above.
+        continue-on-error: true
+        shell: bash
+        run: uv run pytest -q
