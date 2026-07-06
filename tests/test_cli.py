@@ -2067,3 +2067,122 @@ def test_ut_c_064_without_force_suffix_behavior_unchanged(
     assert captured.out == f"{deduped}\n"
     assert output.read_text(encoding="utf-8") == "old content"
     assert deduped.exists()
+
+
+def test_ut_c_065_dedupe_reserves_the_returned_name(tmp_workdir: Path) -> None:
+    """UT-C-065: ``dedupe_output_path`` reserves the name it returns.
+
+    Notes
+    -----
+    The returned path must already exist on disk (as an empty reservation
+    file, later replaced atomically), so a concurrent export can never be
+    handed the same name: a second call without any intervening write must
+    return the next suffix.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    first = dedupe_output_path(tmp_workdir / "report.html")
+    second = dedupe_output_path(tmp_workdir / "report.html")
+
+    assert first == tmp_workdir / "report.html"
+    assert first.exists()
+    assert second == tmp_workdir / "report-1.html"
+    assert second.exists()
+
+
+def test_ut_c_066_write_html_cleans_up_temp_file_on_failure(
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-066: A failed atomic replace leaves no temp file behind.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_os_error(src: object, dst: object) -> None:
+        del src, dst
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(cli_module.os, "replace", _raise_os_error)
+    target = tmp_workdir / "out.html"
+
+    with pytest.raises(OSError, match="replace failed"):
+        cli_module._write_html(target, "<html></html>")
+
+    leftovers = [p for p in tmp_workdir.iterdir() if p != target]
+    assert leftovers == []
+    assert not target.exists()
+
+
+def test_ut_c_067_write_failure_cleans_up_reservation(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-067: A write failure removes the dedupe reservation file.
+
+    Notes
+    -----
+    The requested path already exists, so the dedupe step reserves
+    ``out-1.html``. When writing then fails, the empty reservation must not
+    be left behind.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_os_error(path: Path, html: str) -> None:
+        del path, html
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_module, "_write_html", _raise_os_error)
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.EXECUTION_FAILED
+    assert not (tmp_workdir / "out-1.html").exists()
+    assert output.read_text(encoding="utf-8") == "existing"
+
+
+def test_ut_c_068_write_html_atomically_replaces_existing_content(
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-068: ``_write_html`` replaces an existing file with full content.
+
+    Traceability
+    ------------
+    Issue #62
+    """
+    from duckdb_ui_notebook_export.cli import _write_html
+
+    target = tmp_workdir / "out.html"
+    target.write_text("old", encoding="utf-8")
+    html = "<html><body>" + ("x" * 10_000) + "</body></html>"
+
+    _write_html(target, html)
+
+    assert target.read_text(encoding="utf-8") == html
+    leftovers = [p for p in tmp_workdir.iterdir() if p != target]
+    assert leftovers == []

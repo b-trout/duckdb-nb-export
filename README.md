@@ -201,10 +201,14 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 
 By default, existing output files are not overwritten; a numeric suffix is
 added. Pass `--force` to overwrite the requested path in place instead (no
-suffix, no dedupe warning). On success, the CLI prints the final output
-path (after any numeric-suffix deduplication) as a single line to stdout,
-so scripts can capture it directly; a renamed path also emits a warning
-naming the requested and actual paths on stderr.
+suffix, no dedupe warning). The HTML is written atomically: it is staged in
+a temporary file in the destination directory and moved into place with an
+atomic rename, so a reader never observes a partially written export, and
+the suffixed name is reserved on disk the moment it is chosen so a
+concurrent export cannot claim the same path. On success, the CLI prints
+the final output path (after any numeric-suffix deduplication) as a single
+line to stdout, so scripts can capture it directly; a renamed path also
+emits a warning naming the requested and actual paths on stderr.
 
 If `-o`/`--output` points outside the allowed base directory (the current
 directory by default, or the directory passed to `--output-dir`), the export

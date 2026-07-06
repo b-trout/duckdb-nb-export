@@ -211,6 +211,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `db == ":memory:"` and warned even when `:memory:` was requested
   explicitly rather than being a fallback
   ([#49](https://github.com/b-trout/duckdb-nb-export/issues/49)).
+- The output HTML is now written atomically and the deduplicated name is
+  reserved race-free. The document is staged in a temporary file in the
+  destination directory and moved into place with `os.replace`, so a
+  reader never observes a partially written export; the numeric-suffix
+  dedupe now reserves each candidate name with a create-exclusive open
+  instead of an `exists()` probe, closing the window where a concurrent
+  export could claim the same path. A failure between reservation and
+  write removes both the temporary file and the empty reservation
+  ([#62](https://github.com/b-trout/duckdb-nb-export/issues/62)).
 - EOF (Ctrl-D) at the execution confirmation prompt now declines the
   confirmation and exits 5 (`CONFIRMATION_DECLINED`), the same as
   answering "n"; previously the `EOFError` escaped as a raw traceback

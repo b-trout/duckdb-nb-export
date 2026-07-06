@@ -24,8 +24,10 @@ and orchestration across the reader, executor, and renderer layers.
 import argparse
 import logging
 import math
+import os
 import re
 import sys
+import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -127,7 +129,7 @@ def _sanitized_beyond_whitespace(name: str, sanitized_name: str) -> bool:
 
 
 def dedupe_output_path(path: Path) -> Path:
-    """Return a non-existing output path by appending a numeric suffix.
+    """Reserve and return a free output path by appending a numeric suffix.
 
     Parameters
     ----------
@@ -137,22 +139,37 @@ def dedupe_output_path(path: Path) -> Path:
     Returns
     -------
     pathlib.Path
-        ``path`` when it does not exist, otherwise ``<name>-N.html``.
+        ``path`` when it did not exist, otherwise ``<name>-N.html``. The
+        returned path exists on disk as an empty reservation file.
 
     Raises
     ------
-    None
-        This function does not raise package-specific exceptions.
-    """
-    if not path.exists():
-        return path
+    OSError
+        Raised when the reservation file cannot be created (for example the
+        parent directory is not writable).
 
-    counter = 1
+    Notes
+    -----
+    Instead of probing with ``exists()`` (which leaves a window where a
+    concurrent process can claim the same name), each candidate is reserved
+    by creating it with ``open("x")`` (create-exclusive). The empty
+    reservation file is later replaced atomically by ``_write_html``'s
+    ``os.replace``; the caller owns cleaning up the reservation if the
+    write never happens (issue #62). The parent directory is created when
+    missing so the reservation can be placed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    candidate = path
+    counter = 0
     while True:
-        candidate = path.with_name(f"{path.stem}-{counter}{path.suffix}")
-        if not candidate.exists():
+        try:
+            candidate.touch(exist_ok=False)
+        except FileExistsError:
+            counter += 1
+            candidate = path.with_name(f"{path.stem}-{counter}{path.suffix}")
+        else:
             return candidate
-        counter += 1
 
 
 def resolve_output_path(
@@ -585,7 +602,7 @@ def _report_cell_failures(report: ExecutionReport, output_path: Path) -> None:
 
 
 def _write_html(path: Path, html: str) -> None:
-    """Write rendered HTML to disk using UTF-8.
+    """Write rendered HTML to disk atomically using UTF-8.
 
     Parameters
     ----------
@@ -598,9 +615,35 @@ def _write_html(path: Path, html: str) -> None:
     -------
     None
         The file is written to disk.
+
+    Raises
+    ------
+    OSError
+        Raised when the temporary file cannot be written or the atomic
+        replace fails; the temporary file is removed before re-raising.
+
+    Notes
+    -----
+    The document is first written to a temporary file in the same directory
+    and then moved onto ``path`` with ``os.replace``, so a reader never
+    observes a partially written file and an existing file (including the
+    empty reservation created by ``dedupe_output_path``, or the previous
+    export under ``--force``) is replaced atomically (issue #62).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(html)
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def _positive_int_arg(value: str) -> int:
@@ -1020,17 +1063,26 @@ def _run(argv: list[str] | None = None) -> int:
             ),
         )
         html = render_html(notebook, report, metadata)
+        reservation: Path | None = None
         if args.force:
             final_output_path = output_path
         else:
             final_output_path = dedupe_output_path(output_path)
+            reservation = final_output_path
             if final_output_path != output_path:
                 _direct_stderr_logger().warning(
                     "output_path_deduplicated",
                     requested=str(output_path),
                     actual=str(final_output_path),
                 )
-        _write_html(final_output_path, html)
+        try:
+            _write_html(final_output_path, html)
+        except BaseException:
+            # Remove the empty name reservation created by
+            # dedupe_output_path when the write onto it never happened.
+            if reservation is not None:
+                reservation.unlink(missing_ok=True)
+            raise
         sys.stdout.write(f"{final_output_path}\n")
         _report_cell_failures(report, final_output_path)
         if _cell_error_exit_required(
