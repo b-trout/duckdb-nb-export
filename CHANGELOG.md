@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Log output no longer emits ANSI color escape codes when stderr is not a
+  terminal (for example when piped or redirected to a file), and the
+  `NO_COLOR` environment variable (any value, including an empty string,
+  per [no-color.org](https://no-color.org/)) now disables color output even
+  when stderr is a terminal. Previously `structlog`'s `ConsoleRenderer` always
+  emitted color codes regardless of the output stream or `NO_COLOR`
+  ([#46](https://github.com/b-trout/duckdb-nb-export/issues/46)).
+
 ### Added
 
 - The exported HTML footer now records the target database and write mode
