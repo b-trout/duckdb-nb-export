@@ -15,9 +15,6 @@ Raises
 None
     Importing this module should not raise package-specific exceptions.
 
-Notes
------
-The implementation is intentionally skeletal while tests are developed first.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"

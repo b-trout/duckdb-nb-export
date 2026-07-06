@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-07-06
+
 ### Added
 
 - Windows support on a best-effort basis, with `windows-latest` added to
@@ -57,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookups failed
   ([#8](https://github.com/b-trout/duckdb-nb-export/issues/8)).
 
+### Known limitations
+
+- No chart rendering. This is a permanent limitation, not a pending
+  feature: DuckDB UI does not persist chart configuration anywhere.
+- Environment replay is limited to the database name (`USE`, best
+  effort); ATTACH, extensions, secrets, and variables are not
+  reproduced because stored notebooks do not record them.
+- Windows is supported on a best-effort basis: reading `ui.db` while
+  DuckDB UI is running is not possible there.
+
 ## [0.0.1] - 2026-07-05
 
 Initial alpha release.
@@ -81,5 +93,6 @@ Initial alpha release.
 - No chart rendering, no notebook environment (database) replay, and no
   verified Windows support.
 
-[Unreleased]: https://github.com/b-trout/duckdb-nb-export/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/b-trout/duckdb-nb-export/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/b-trout/duckdb-nb-export/releases/tag/v0.0.2
 [0.0.1]: https://github.com/b-trout/duckdb-nb-export/releases/tag/v0.0.1
