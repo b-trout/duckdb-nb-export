@@ -160,6 +160,8 @@
 | UT-X-020 | `--no-external-access` 指定時、`SET enable_external_access = false` に相当する設定で実行されること | design doc 4.2節, 5章, ADR-006 |
 | UT-X-021 | notebook JSONのDB名(`currentDatabase`/`useDatabase`)がベストエフォートの `USE` で再現されること — notebookレベルはBEGIN直後、セルレベルは当該セル直前に適用され、ATTACH済みカタログ名なら切り替わること | design doc 4.2節, ADR-008 |
 | UT-X-022 | 解決不能なDB名の `USE` 失敗時、警告(同一名につき1回)を出して現在のデータベースのままセル実行が継続されること | design doc 4.2節, ADR-008 |
+| UT-X-023 | タイムアウトによるトランザクションabort復旧(ROLLBACK+BEGIN)後、トランザクション内ATTACH由来のカタログが失われてデフォルトデータベースが無効になっている場合、プライマリカタログへ警告付きで復元されること | design doc 4.2節, ADR-007, ADR-008 |
+| UT-X-024 | notebookレベルの `currentDatabase` が(未ATTACHのため)一度失敗して警告が出た後、後続セルのATTACHにより同名カタログが解決可能になった場合、セルレベルの `useDatabase` の `USE` 試行自体は抑止されず再試行され成功すること(警告は失敗時のみ・同一名につき1回のまま) | design doc 4.2節, ADR-008 |
 
 ### 3.3 Renderer層
 
