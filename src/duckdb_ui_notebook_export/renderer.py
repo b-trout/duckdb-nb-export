@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+import duckdb
 from jinja2 import Environment
 from markupsafe import Markup
 from pygments import highlight
@@ -253,11 +254,37 @@ def mask_secrets(sql: str) -> str:
 
     Notes
     -----
-    Structural elements such as TYPE, PROVIDER, and SCOPE must remain visible.
+    Structural elements such as TYPE, PROVIDER, and SCOPE must remain
+    visible. Masking is scoped per statement (via
+    ``duckdb.extract_statements``) rather than to the whole cell text, since
+    a cell text spanning multiple statements would otherwise have its
+    parameter region span from the first ``(`` to the last ``)`` in the
+    entire cell, corrupting or dropping every statement after the CREATE
+    SECRET call (issue #29). When the cell contains exactly one statement,
+    the original text is masked directly and returned byte-for-byte aside
+    from the parameter substitution, matching pre-#29 behavior exactly.
     """
     if not _CREATE_SECRET_RE.search(sql):
         return sql
 
+    try:
+        statements = duckdb.extract_statements(sql)
+    except duckdb.Error:
+        return _mask_secret_parameters_in_text(sql)
+
+    if len(statements) <= 1:
+        return _mask_secret_parameters_in_text(sql)
+
+    return ";\n".join(
+        _mask_secret_parameters_in_text(statement.query)
+        if _CREATE_SECRET_RE.search(statement.query)
+        else statement.query
+        for statement in statements
+    )
+
+
+def _mask_secret_parameters_in_text(sql: str) -> str:
+    """Mask CREATE SECRET parameter values within a single statement's text."""
     start = sql.find("(")
     end = sql.rfind(")")
     if start == -1 or end == -1 or end <= start:

@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `open_ui_db` now opportunistically removes snapshot directories older
   than 24 hours before creating a new one
   ([#38](https://github.com/b-trout/duckdb-nb-export/issues/38)).
+- `mask_secrets` no longer corrupts multi-statement cells. Masking was
+  previously scoped to the whole cell text via `sql.find("(")` /
+  `sql.rfind(")")`, so a cell containing a `CREATE SECRET` statement
+  followed (or preceded) by other statements would silently drop or
+  mangle those other statements in the rendered HTML. Masking is now
+  scoped per statement using `duckdb.extract_statements`, and falls back
+  to the previous whole-text masking if statement splitting itself fails
+  ([#29](https://github.com/b-trout/duckdb-nb-export/issues/29)).
 
 ## [0.0.2] - 2026-07-06
 
