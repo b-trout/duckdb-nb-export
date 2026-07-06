@@ -1655,3 +1655,26 @@ def test_ut_c_053_no_fail_on_cell_error_still_reports_but_exits_zero(
     assert "cell_failed" in captured.err
     assert "missing_table" in captured.err
     assert "cells_failed_summary" in captured.err
+
+
+def test_ut_c_054_version_flag_prints_tool_and_duckdb_versions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-054: ``--version`` prints tool and DuckDB versions, exits 0.
+
+    Traceability
+    ------------
+    Issue #53
+    """
+    import duckdb
+
+    from duckdb_ui_notebook_export import __version__
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert __version__ in captured.out
+    assert duckdb.__version__ in captured.out
+    assert "duckdb-nb-export" in captured.out

@@ -172,6 +172,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | --- | --- | --- |
 | `notebook_name` | Notebook name to export. Optional when `--list` is used. | None |
 | `-h`, `--help` | Show help and exit. | Off |
+| `--version` | Show the tool version (and the DuckDB version in use) and exit. | Off |
 | `-o`, `--output` | Output HTML path. | `<notebook-name>.html` under the allowed base |
 | `--output-dir` | Allowed base directory and default output directory. | Current directory |
 | `--notebook-id` | Export the notebook with this exact ID (from `--list`); use when names are ambiguous. | None |

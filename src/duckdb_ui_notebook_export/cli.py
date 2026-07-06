@@ -612,6 +612,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Export a DuckDB UI notebook to static HTML.",
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__} (duckdb {duckdb.__version__})",
+        help="Show the tool version (and the DuckDB version in use) and exit.",
+    )
+    parser.add_argument(
         "notebook_name",
         nargs="?",
         help="Notebook name to export. Optional when --list or --notebook-id is used.",
