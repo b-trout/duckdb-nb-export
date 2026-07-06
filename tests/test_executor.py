@@ -877,3 +877,77 @@ def test_ut_x_033_memory_target_is_unaffected_by_existence_check() -> None:
     report = execute_notebook(notebook, ":memory:")
 
     assert report.cell_results[0].status is CellStatus.OK
+
+
+def test_ut_x_034_read_only_write_cell_fails_but_export_completes(
+    fresh_duckdb: Path,
+) -> None:
+    """UT-X-034: read_only rejects writes but the export still completes.
+
+    Notes
+    -----
+    Unlike an ordinary CatalogException, DuckDB aborts the transaction when
+    a write is attempted on a read-only connection, so the remaining cell
+    is skipped rather than executed -- matching the existing abort-handling
+    path (UT-X-005/UT-X-006) rather than UT-X-004's continue-after-error
+    path.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    notebook = make_notebook(
+        "CREATE TABLE should_fail_read_only(id INTEGER);",
+        "SELECT 1 AS should_be_skipped;",
+    )
+
+    report = execute_notebook(notebook, str(fresh_duckdb), read_only=True)
+
+    assert report.cell_results[0].status is CellStatus.ERROR
+    assert report.cell_results[1].status is CellStatus.SKIPPED_ABORT
+    assert not table_exists(fresh_duckdb, "should_fail_read_only")
+
+
+def test_ut_x_035_read_only_with_memory_target_raises(fresh_duckdb: Path) -> None:
+    """UT-X-035: read_only with a ``:memory:`` target raises.
+
+    Notes
+    -----
+    ``duckdb.connect(":memory:", read_only=True)`` is invalid in DuckDB;
+    the executor must reject this combination with a clear message before
+    attempting to connect.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    del fresh_duckdb
+    notebook = make_notebook("SELECT 1;")
+
+    with pytest.raises(TargetDatabaseError):
+        execute_notebook(notebook, ":memory:", read_only=True)
+
+
+def test_ut_x_036_read_only_with_nonexistent_path_raises_target_database_error(
+    tmp_path: Path,
+) -> None:
+    """UT-X-036: read_only with a missing file raises before connecting.
+
+    Notes
+    -----
+    Combines with the issue #30 existence check: a nonexistent path plus
+    ``read_only=True`` must raise ``TargetDatabaseError`` rather than
+    letting DuckDB attempt (and fail) to open a read-only connection to a
+    file that does not exist.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    missing_db = tmp_path / "missing-read-only.duckdb"
+    notebook = make_notebook("SELECT 1;")
+
+    with pytest.raises(TargetDatabaseError):
+        execute_notebook(notebook, str(missing_db), read_only=True)
+
+    assert not missing_db.exists()

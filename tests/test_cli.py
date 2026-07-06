@@ -387,6 +387,64 @@ def test_ut_c_028_main_returns_ui_db_access_failed_for_missing_target_db(
     assert not missing_db.exists()
 
 
+def test_ut_c_029_read_only_and_allow_writes_are_mutually_exclusive(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-029: ``--read-only`` and ``--allow-writes`` cannot both be set.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "Notebook",
+                "--ui-db",
+                str(synthetic_ui_db),
+                "--db",
+                str(fresh_duckdb),
+                "--output",
+                str(tmp_workdir / "out.html"),
+                "--read-only",
+                "--allow-writes",
+                "--yes",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_ut_c_030_read_only_flag_is_passed_to_executor(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-030: ``--read-only`` completes the export with exit code 0.
+
+    Traceability
+    ------------
+    Issue #31
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--read-only",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+
+
 def test_ut_c_027_abandoned_report_requires_cell_error_exit(tmp_path: Path) -> None:
     """UT-C-027: ``report.abandoned`` True maps to ``ExitCode.CELL_ERROR``.
 

@@ -421,10 +421,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Stop processing after the first cell error.",
     )
-    parser.add_argument(
+    write_mode_group = parser.add_mutually_exclusive_group()
+    write_mode_group.add_argument(
         "--allow-writes",
         action="store_true",
         help="Commit notebook changes instead of rolling them back.",
+    )
+    write_mode_group.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Open the target database in DuckDB read-only mode for a "
+        "stronger no-writes guarantee. Notebook cells that create or "
+        "modify tables will fail.",
     )
     parser.add_argument(
         "--no-external-access",
@@ -519,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
             notebook,
             target_db,
             allow_writes=args.allow_writes,
+            read_only=args.read_only,
             max_rows=args.max_rows,
             cell_timeout=args.cell_timeout,
             stop_on_error=args.stop_on_error,

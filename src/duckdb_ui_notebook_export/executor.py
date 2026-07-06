@@ -713,6 +713,7 @@ def execute_notebook(
     db: str,
     *,
     allow_writes: bool = False,
+    read_only: bool = False,
     max_rows: int = 1000,
     cell_timeout: float = 300.0,
     interrupt_grace: float = 30.0,
@@ -729,6 +730,13 @@ def execute_notebook(
         Target DuckDB database path or ``":memory:"``.
     allow_writes
         Commit changes instead of rolling them back.
+    read_only
+        Open the target database with DuckDB's read-only mode for a
+        stronger no-writes guarantee than the default rollback-based
+        safety net. Cells that create or modify tables fail with
+        ``CellStatus.ERROR`` instead of being rolled back after the fact.
+        Mutually exclusive with a ``":memory:"`` target, which DuckDB
+        cannot open read-only.
     max_rows
         Maximum result rows to include per cell.
     cell_timeout
@@ -750,7 +758,9 @@ def execute_notebook(
     duckdb_ui_notebook_export.exceptions.TargetDatabaseError
         Raised when ``db`` is a plain local path that does not exist as a
         file, which is almost always a mistyped ``--db`` rather than an
-        intentional new database (issue #30).
+        intentional new database (issue #30); also raised when
+        ``read_only`` is True and ``db`` is ``":memory:"``, which DuckDB
+        cannot open read-only (issue #31).
     duckdb.Error
         Raised when setup or final transaction control fails outside cell
         execution.
@@ -766,6 +776,13 @@ def execute_notebook(
         warnings.append(warning)
         LOGGER.warning("using_memory_database_fallback", database=db, warning=warning)
 
+    if read_only and db == ":memory:":
+        message = (
+            "--read-only requires an existing database file; ':memory:' "
+            "cannot be opened read-only."
+        )
+        raise TargetDatabaseError(message)
+
     if _requires_existence_check(db) and not Path(db).is_file():
         message = (
             f"Target database {db!r} does not exist. --db must point to an "
@@ -774,7 +791,7 @@ def execute_notebook(
         raise TargetDatabaseError(message)
 
     cell_results: list[CellResult] = []
-    connection = duckdb.connect(db)
+    connection = duckdb.connect(db, read_only=read_only)
     abandoned = False
     try:
         primary_database = _current_database_name(connection)
