@@ -304,32 +304,13 @@ def _cell_error_exit_required(report: ExecutionReport, *, stop_on_error: bool) -
     bool
         True when the CLI should return ``ExitCode.CELL_ERROR``.
     """
-    if any(
-        _is_abandoned_result_message(result.error_message)
-        for result in report.cell_results
-    ):
+    if report.abandoned:
         return True
     if any(result.status is CellStatus.TIMEOUT for result in report.cell_results):
         return True
     if stop_on_error:
         return any(result.status is not CellStatus.OK for result in report.cell_results)
     return False
-
-
-def _is_abandoned_result_message(message: str | None) -> bool:
-    """Return whether an execution message marks abandoned work.
-
-    Parameters
-    ----------
-    message
-        Optional cell execution message.
-
-    Returns
-    -------
-    bool
-        True when the message contains ``abandoned``.
-    """
-    return message is not None and "abandoned" in message.lower()
 
 
 def _write_html(path: Path, html: str) -> None:

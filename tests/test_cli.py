@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from duckdb_ui_notebook_export.cli import (
+    _cell_error_exit_required,
     confirm_execution,
     dedupe_output_path,
     main,
@@ -28,6 +29,7 @@ from duckdb_ui_notebook_export.cli import (
     sanitize_filename,
 )
 from duckdb_ui_notebook_export.exceptions import ExitCode, OutputPathError
+from duckdb_ui_notebook_export.executor import CellResult, CellStatus, ExecutionReport
 from duckdb_ui_notebook_export.models import Cell
 
 
@@ -348,6 +350,39 @@ def test_ut_c_016_main_returns_cell_error_and_partial_html_on_hard_timeout(
 
     assert exit_code == ExitCode.CELL_ERROR
     assert output.exists()
+
+
+def test_ut_c_027_abandoned_report_requires_cell_error_exit(tmp_path: Path) -> None:
+    """UT-C-027: ``report.abandoned`` True maps to ``ExitCode.CELL_ERROR``.
+
+    Notes
+    -----
+    Replaces the old brittle substring check on error messages
+    (``_is_abandoned_result_message``) with a structured
+    ``ExecutionReport.abandoned`` flag.
+
+    Traceability
+    ------------
+    Issue #28
+    """
+    del tmp_path
+    report = ExecutionReport(
+        cell_results=[
+            CellResult(
+                status=CellStatus.OK,
+                columns=[],
+                rows=[],
+                truncated=False,
+                affected_rows=None,
+                error_message=None,
+            ),
+        ],
+        warnings=[],
+        used_memory_fallback=False,
+        abandoned=True,
+    )
+
+    assert _cell_error_exit_required(report, stop_on_error=False) is True
 
 
 def test_ut_c_022_default_output_path_uses_notebook_name(

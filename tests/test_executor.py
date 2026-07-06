@@ -13,6 +13,7 @@ import duckdb
 import pytest
 
 from duckdb_ui_notebook_export.executor import (
+    CellResult,
     CellStatus,
     contains_transaction_statement,
     execute_notebook,
@@ -349,6 +350,147 @@ def test_ut_x_013_uninterruptible_query_abandons_later_cells(
     cannot be reproduced reliably without mocking DuckDB internals.
     """
     pytest.skip("cannot reliably reproduce un-interruptible query with real DuckDB")
+
+
+class _SpyConnection:
+    """Spy wrapper recording SQL and lifecycle calls on a real connection.
+
+    Parameters
+    ----------
+    real_connection
+        Real DuckDB connection to delegate all operations to.
+
+    Returns
+    -------
+    _SpyConnection
+        Spy instance wrapping ``real_connection``.
+
+    Raises
+    ------
+    None
+        Construction does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Used by UT-X-025/UT-X-026 to observe that the executor never issues
+    COMMIT/ROLLBACK or calls ``close()``/``interrupt()`` on the connection
+    after an uninterruptible timeout is abandoned.
+    """
+
+    def __init__(self, real_connection: duckdb.DuckDBPyConnection) -> None:
+        self._real_connection = real_connection
+        self.executed_sql: list[str] = []
+        self.close_called = False
+        self.interrupt_called = False
+
+    def execute(
+        self,
+        query: duckdb.Statement | str,
+        parameters: object = None,
+    ) -> duckdb.DuckDBPyConnection:
+        """Record ``query`` and delegate execution to the real connection."""
+        self.executed_sql.append(str(query))
+        return self._real_connection.execute(query, parameters)
+
+    def close(self) -> None:
+        """Record that ``close`` was called without closing the real connection."""
+        self.close_called = True
+
+    def interrupt(self) -> None:
+        """Record that ``interrupt`` was called and delegate it."""
+        self.interrupt_called = True
+        self._real_connection.interrupt()
+
+    def __getattr__(self, name: str) -> object:
+        """Delegate any other attribute access to the real connection."""
+        return getattr(self._real_connection, name)
+
+
+def test_ut_x_025_abandoned_timeout_never_touches_connection_again(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-025: an abandoned timeout must not COMMIT/ROLLBACK/close afterward.
+
+    Notes
+    -----
+    Simulates the second cell of a 3-cell notebook returning
+    ``abandoned=True`` from ``_run_cell_in_thread``. The executor must return
+    promptly, mark ``report.abandoned`` True, produce
+    ``[OK, TIMEOUT, SKIPPED_ABORT]`` results, and never issue a COMMIT or
+    ROLLBACK nor call ``close()`` on the connection after abandonment,
+    because the stuck daemon worker thread may still be using it.
+
+    Traceability
+    ------------
+    Issue #28
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    spy = _SpyConnection(real_connection)
+    monkeypatch.setattr(executor_module.duckdb, "connect", lambda *a, **k: spy)
+
+    call_count = {"n": 0}
+    original_run_cell_in_thread = executor_module._run_cell_in_thread
+
+    def fake_run_cell_in_thread(
+        connection: duckdb.DuckDBPyConnection,
+        sql: str,
+        max_rows: int,
+        cell_timeout: float,
+        interrupt_grace: float,
+    ) -> tuple[CellResult | None, BaseException | None, bool]:
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            return None, None, True
+        return original_run_cell_in_thread(
+            connection,
+            sql,
+            max_rows,
+            cell_timeout,
+            interrupt_grace,
+        )
+
+    monkeypatch.setattr(
+        executor_module,
+        "_run_cell_in_thread",
+        fake_run_cell_in_thread,
+    )
+
+    notebook = make_notebook(
+        "SELECT 1 AS first;",
+        "SELECT 2 AS second;",
+        "SELECT 3 AS third;",
+    )
+
+    report = execute_notebook(notebook, str(fresh_duckdb))
+
+    assert [result.status for result in report.cell_results] == [
+        CellStatus.OK,
+        CellStatus.TIMEOUT,
+        CellStatus.SKIPPED_ABORT,
+    ]
+    assert report.abandoned is True
+    assert not any("ROLLBACK" in sql or "COMMIT" in sql for sql in spy.executed_sql)
+    assert spy.close_called is False
+    assert any("abandoned" in warning.lower() for warning in report.warnings)
+
+    real_connection.close()
+
+
+def test_ut_x_026_normal_run_reports_not_abandoned(fresh_duckdb: Path) -> None:
+    """UT-X-026: a normal run reports ``abandoned`` as False.
+
+    Traceability
+    ------------
+    Issue #28
+    """
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(notebook, str(fresh_duckdb))
+
+    assert report.abandoned is False
 
 
 def test_ut_x_014_cli_db_overrides_notebook_database_info(

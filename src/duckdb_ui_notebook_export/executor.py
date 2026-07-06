@@ -125,6 +125,12 @@ class ExecutionReport:
         Warning messages to surface in CLI output and HTML metadata.
     used_memory_fallback
         Whether ``:memory:`` was used because no target database was resolved.
+    abandoned
+        Whether execution was abandoned after an uninterruptible timeout left
+        a worker thread still running against the connection. When True, the
+        connection was deliberately never touched again (no COMMIT/ROLLBACK,
+        no ``close()``) because DuckDB serializes operations per connection
+        and doing so could block forever.
 
     Returns
     -------
@@ -144,6 +150,7 @@ class ExecutionReport:
     cell_results: list[CellResult]
     warnings: list[str]
     used_memory_fallback: bool
+    abandoned: bool = False
 
 
 def resolve_target_db(notebook: Notebook, cli_db: str | None) -> tuple[str, bool]:
@@ -719,6 +726,7 @@ def execute_notebook(
 
     cell_results: list[CellResult] = []
     connection = duckdb.connect(db)
+    abandoned = False
     try:
         primary_database = _current_database_name(connection)
         if no_external_access:
@@ -755,14 +763,15 @@ def execute_notebook(
                     failed_use_databases,
                 )
 
-            result, error, abandoned = _run_cell_in_thread(
+            result, error, cell_abandoned = _run_cell_in_thread(
                 connection,
                 cell.sql,
                 max_rows,
                 cell_timeout,
                 interrupt_grace,
             )
-            if abandoned:
+            if cell_abandoned:
+                abandoned = True
                 cell_results.append(
                     _empty_result(
                         CellStatus.TIMEOUT,
@@ -812,6 +821,25 @@ def execute_notebook(
                     warnings,
                 )
 
+        if abandoned:
+            warning = (
+                "Execution was abandoned after an uninterruptible timeout; the "
+                "database connection was intentionally left open (not "
+                "committed, rolled back, or closed) because a worker thread "
+                "may still be using it."
+            )
+            warnings.append(warning)
+            LOGGER.warning(
+                "connection_left_open_after_abandoned_timeout",
+                warning=warning,
+            )
+            return ExecutionReport(
+                cell_results=cell_results,
+                warnings=warnings,
+                used_memory_fallback=used_memory_fallback,
+                abandoned=True,
+            )
+
         if allow_writes:
             connection.execute("COMMIT")
         else:
@@ -821,12 +849,14 @@ def execute_notebook(
             connection.execute("ROLLBACK")
         except duckdb.Error:
             LOGGER.warning("rollback_after_executor_error_failed")
+        connection.close()
         raise
-    finally:
+    else:
         connection.close()
 
     return ExecutionReport(
         cell_results=cell_results,
         warnings=warnings,
         used_memory_fallback=used_memory_fallback,
+        abandoned=False,
     )
