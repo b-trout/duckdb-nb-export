@@ -1524,3 +1524,134 @@ def test_ut_c_047_default_level_shows_info_and_warning(
     captured = capsys.readouterr()
     assert exit_code == ExitCode.OK
     assert "output_path_deduplicated" in captured.err
+
+
+@pytest.fixture
+def green_synthetic_ui_db(tmp_path: Path) -> Path:
+    """Build a synthetic ui.db whose only notebook has no failing cells.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to a generated ui.db file.
+    """
+    from tests.helpers.synthetic_ui_db import build_ui_db
+
+    try:
+        return build_ui_db(
+            [
+                _notebook_spec(
+                    "Notebook",
+                    _sql_cell("SELECT 1"),
+                    _sql_cell("SELECT 2"),
+                )
+            ],
+            tmp_path,
+        )
+    except NotImplementedError as error:
+        pytest.skip(str(error))
+
+
+def test_ut_c_051_cell_failure_reports_error_message_on_stderr(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-051: A failing cell's error message reaches stderr, exit code 2.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook's second cell (1-based index 2)
+    is ``SELECT * FROM missing_table``, which fails with a
+    "missing_table"-mentioning error. The CLI must log a ``cell_failed``
+    event naming the cell index and status, plus a summary event, before
+    returning ``ExitCode.CELL_ERROR``.
+
+    Traceability
+    ------------
+    Issue #44
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.CELL_ERROR
+    assert "cell_failed" in captured.err
+    assert "missing_table" in captured.err
+    assert "cells_failed_summary" in captured.err
+    assert str(tmp_workdir / "out.html") in captured.err
+
+
+def test_ut_c_052_green_notebook_emits_no_cell_failure_events(
+    green_synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-052: A fully-green notebook emits no cell-failure stderr events.
+
+    Traceability
+    ------------
+    Issue #44
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(green_synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "cell_failed" not in captured.err
+    assert "cells_failed_summary" not in captured.err
+
+
+def test_ut_c_053_no_fail_on_cell_error_still_reports_but_exits_zero(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-053: ``--no-fail-on-cell-error`` still reports, but exits 0.
+
+    Traceability
+    ------------
+    Issue #44
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "cell_failed" in captured.err
+    assert "missing_table" in captured.err
+    assert "cells_failed_summary" in captured.err

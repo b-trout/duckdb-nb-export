@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cell failures are no longer silent on stderr. Previously a failing cell
+  produced exit code 2 with no on-screen indication of what failed, even
+  though README already claimed stderr reporting. The CLI now logs a
+  `cell_failed` event per non-OK cell result (1-based cell index, status,
+  and a truncated error message) plus a `cells_failed_summary` event
+  naming the output path, both before the process exits; this happens
+  whenever a cell fails, including under `--no-fail-on-cell-error` (which
+  still exits 0)
+  ([#44](https://github.com/b-trout/duckdb-nb-export/issues/44)).
 - The `notebook_name_sanitized_for_output` warning no longer fires for
   every notebook name that merely contains a space. Only names that need
   more than whitespace-to-underscore substitution (for example a path

@@ -404,6 +404,67 @@ def _cell_error_exit_required(
     return any(result.status is not CellStatus.OK for result in report.cell_results)
 
 
+_ERROR_MESSAGE_TRUNCATE_LENGTH = 300
+
+
+def _report_cell_failures(report: ExecutionReport, output_path: Path) -> None:
+    """Log one ERROR event per failed cell, plus a summary, to stderr.
+
+    Parameters
+    ----------
+    report
+        Notebook execution report.
+    output_path
+        Final HTML output path, named in the summary event so readers know
+        where to find full details.
+
+    Returns
+    -------
+    None
+        Log events are written to stderr through the direct stderr logger.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    This makes cell failures visible on stderr even though the export
+    itself completes and writes HTML; previously a non-OK cell result was
+    only visible in the rendered HTML, and the process exit code (2) gave
+    no on-screen indication of what failed. Called before the CLI decides
+    the final exit code, regardless of ``--no-fail-on-cell-error`` (only
+    ``_cell_error_exit_required`` decides whether the process exit code
+    reflects the failures).
+    """
+    logger = _direct_stderr_logger()
+    failed_count = 0
+    for index, result in enumerate(report.cell_results, start=1):
+        if result.status is CellStatus.OK:
+            continue
+        failed_count += 1
+        error_message = result.error_message or ""
+        if len(error_message) > _ERROR_MESSAGE_TRUNCATE_LENGTH:
+            error_message = error_message[:_ERROR_MESSAGE_TRUNCATE_LENGTH] + "..."
+        logger.error(
+            "cell_failed",
+            cell_index=index,
+            status=result.status.value,
+            error_message=error_message,
+        )
+
+    if failed_count == 0:
+        return
+
+    logger.warning(
+        "cells_failed_summary",
+        failed_count=failed_count,
+        total_count=len(report.cell_results),
+        error=f"details in {output_path}",
+    )
+
+
 def _write_html(path: Path, html: str) -> None:
     """Write rendered HTML to disk using UTF-8.
 
@@ -787,6 +848,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         _write_html(final_output_path, html)
         sys.stdout.write(f"{final_output_path}\n")
+        _report_cell_failures(report, final_output_path)
         if _cell_error_exit_required(
             report,
             stop_on_error=args.stop_on_error,

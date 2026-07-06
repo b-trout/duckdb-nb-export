@@ -225,11 +225,16 @@ By default, the exit code fails (exit 2) whenever any cell result is not a
 plain success (`ERROR`, `SKIPPED_ABORT`, `REJECTED_TRANSACTION_STATEMENT`,
 `TIMEOUT`), or execution was abandoned after an uninterruptible timeout;
 `--stop-on-error` additionally stops processing early after the first cell
-error. Pass `--no-fail-on-cell-error` to restore the previous (pre-0.0.3)
-behavior of exiting 0 whenever the run completes despite per-cell failures,
-which are still reported in the rendered HTML and on stderr; timeouts and
-abandoned execution still exit 2 even with this flag, since those indicate
-the export itself did not run to completion as requested.
+error. Whenever any cell fails, the CLI logs a `cell_failed` event per
+failed cell (1-based cell index, status, and a truncated error message) and
+a final `cells_failed_summary` event naming the output path, both on
+stderr, before returning the exit code; this happens regardless of
+`--no-fail-on-cell-error`. Pass `--no-fail-on-cell-error` to restore the
+previous (pre-0.0.3) behavior of exiting 0 whenever the run completes
+despite per-cell failures, which are still reported in the rendered HTML
+and on stderr; timeouts and abandoned execution still exit 2 even with
+this flag, since those indicate the export itself did not run to
+completion as requested.
 
 ### Limitations
 
