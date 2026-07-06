@@ -12,9 +12,11 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from duckdb_ui_notebook_export.exceptions import TargetDatabaseError
 from duckdb_ui_notebook_export.executor import (
     CellResult,
     CellStatus,
+    _requires_existence_check,
     contains_transaction_statement,
     execute_notebook,
     resolve_target_db,
@@ -777,3 +779,101 @@ def test_ut_x_024_use_database_is_retried_after_earlier_failure(
 
     use_warnings = [w for w in report.warnings if "Could not switch" in w]
     assert len(use_warnings) == 1
+
+
+def test_ut_x_027_requires_existence_check_for_plain_local_paths() -> None:
+    """UT-X-027: plain local paths require an existence check.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    assert _requires_existence_check("relative/path.duckdb") is True
+    assert _requires_existence_check("/absolute/path.duckdb") is True
+
+
+def test_ut_x_028_requires_existence_check_windows_drive_letter() -> None:
+    """UT-X-028: a Windows drive letter is treated as a local path, not a URI.
+
+    Notes
+    -----
+    A single-character scheme (``C:``) must not match the URI-scheme skip
+    rule, which requires a 2+ character scheme per RFC 3986.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    assert _requires_existence_check("C:\\data\\x.db") is True
+
+
+def test_ut_x_029_requires_existence_check_skips_memory() -> None:
+    """UT-X-029: ``:memory:`` never requires an existence check.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    assert _requires_existence_check(":memory:") is False
+
+
+def test_ut_x_030_requires_existence_check_skips_uri_schemes() -> None:
+    """UT-X-030: multi-character URI-style schemes skip the existence check.
+
+    Notes
+    -----
+    Preserves ``md:``/``s3:``-style DuckDB connect strings.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    assert _requires_existence_check("md:my_database") is False
+    assert _requires_existence_check("s3://bucket/key.duckdb") is False
+    assert _requires_existence_check("someschemey:whatever") is False
+
+
+def test_ut_x_031_nonexistent_db_path_raises_and_creates_no_file(
+    tmp_path: Path,
+) -> None:
+    """UT-X-031: a mistyped ``--db`` path raises without creating a file.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    missing_db = tmp_path / "typo.duckdb"
+    notebook = make_notebook("SELECT 1;")
+
+    with pytest.raises(TargetDatabaseError):
+        execute_notebook(notebook, str(missing_db))
+
+    assert not missing_db.exists()
+
+
+def test_ut_x_032_existing_db_path_still_works(fresh_duckdb: Path) -> None:
+    """UT-X-032: an existing ``--db`` file path executes normally.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(notebook, str(fresh_duckdb))
+
+    assert report.cell_results[0].status is CellStatus.OK
+
+
+def test_ut_x_033_memory_target_is_unaffected_by_existence_check() -> None:
+    """UT-X-033: ``:memory:`` is unaffected by the existence check.
+
+    Traceability
+    ------------
+    Issue #30
+    """
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(notebook, ":memory:")
+
+    assert report.cell_results[0].status is CellStatus.OK

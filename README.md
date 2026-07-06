@@ -103,6 +103,11 @@ If no target database is resolved, execution falls back to `:memory:` and emits
 a warning. DuckDB UI notebook JSON stores database names, not reliable file
 paths, so pass `--db <path>` for exports that depend on existing tables.
 
+`--db <path>` must point to an existing DuckDB database file (or `:memory:`,
+or a URI-style connect string such as `md:...`); a nonexistent local path is
+rejected with exit code 4 instead of silently creating an empty database
+file, which usually means the path was mistyped.
+
 ### CLI reference
 
 The command is registered by `[project.scripts]` as `duckdb-nb-export`.
@@ -114,7 +119,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `-o`, `--output` | Output HTML path. | `<notebook-name>.html` under the allowed base |
 | `--output-dir` | Allowed base directory and default output directory. | Current directory |
 | `--notebook-id` | Export the notebook with this exact ID (from `--list`); use when names are ambiguous. | None |
-| `--db` | Target DuckDB database path for notebook re-execution. | Resolved from notebook metadata, then `:memory:` |
+| `--db` | Target DuckDB database path for notebook re-execution. Must exist (a nonexistent local path is rejected instead of creating a new file). | Resolved from notebook metadata, then `:memory:` |
 | `--ui-db` | Path to DuckDB UI `ui.db`. | `~/.duckdb/extension_data/ui/ui.db` |
 | `--nb-version` | Notebook version identifier to export. | Latest version |
 | `--list` | List notebooks and exit. | Off |

@@ -21,13 +21,16 @@ Functions are intentionally unimplemented stubs for test-first development.
 """
 
 import enum
+import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import duckdb
 import structlog
 
+from duckdb_ui_notebook_export.exceptions import TargetDatabaseError
 from duckdb_ui_notebook_export.models import Notebook
 
 LOGGER = structlog.get_logger()
@@ -37,6 +40,7 @@ DML_STATEMENT_TYPES = {
     duckdb.StatementType.UPDATE,
     duckdb.StatementType.DELETE,
 }
+_URI_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")
 
 
 class CellStatus(enum.Enum):
@@ -189,6 +193,40 @@ def resolve_target_db(notebook: Notebook, cli_db: str | None) -> tuple[str, bool
         if isinstance(path, str) and path:
             return path, False
     return ":memory:", True
+
+
+def _requires_existence_check(db: str) -> bool:
+    """Return whether ``db`` is a plain local path that must already exist.
+
+    Parameters
+    ----------
+    db
+        Target database string as passed to ``duckdb.connect``.
+
+    Returns
+    -------
+    bool
+        True when ``db`` is a plain local filesystem path (not ``:memory:``
+        and not a URI-style connect string), meaning a missing file is
+        almost certainly a typo rather than an intentional new database.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    ``:memory:`` is never a local path. A string matching a URI scheme
+    prefix (``^[A-Za-z][A-Za-z0-9+.-]+:``, i.e. 2+ characters before the
+    colon) is treated as a connect string such as ``md:...`` or ``s3://...``
+    and skipped, so those keep DuckDB's own connection semantics. A single
+    letter followed by ``:`` (e.g. a Windows drive letter like ``C:\\...``)
+    does not match that pattern and is still treated as a local path.
+    """
+    if db == ":memory:":
+        return False
+    return _URI_SCHEME_PATTERN.match(db) is None
 
 
 def contains_transaction_statement(sql: str) -> bool:
@@ -709,6 +747,10 @@ def execute_notebook(
 
     Raises
     ------
+    duckdb_ui_notebook_export.exceptions.TargetDatabaseError
+        Raised when ``db`` is a plain local path that does not exist as a
+        file, which is almost always a mistyped ``--db`` rather than an
+        intentional new database (issue #30).
     duckdb.Error
         Raised when setup or final transaction control fails outside cell
         execution.
@@ -723,6 +765,13 @@ def execute_notebook(
         warning = "No target database was resolved; executing against :memory:."
         warnings.append(warning)
         LOGGER.warning("using_memory_database_fallback", database=db, warning=warning)
+
+    if _requires_existence_check(db) and not Path(db).is_file():
+        message = (
+            f"Target database {db!r} does not exist. --db must point to an "
+            f"existing DuckDB database file."
+        )
+        raise TargetDatabaseError(message)
 
     cell_results: list[CellResult] = []
     connection = duckdb.connect(db)

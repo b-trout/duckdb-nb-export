@@ -39,6 +39,7 @@ from duckdb_ui_notebook_export.exceptions import (
     NotebookNotFoundError,
     OutputPathError,
     StorageVersionMismatchError,
+    TargetDatabaseError,
     UiDbAccessError,
 )
 from duckdb_ui_notebook_export.executor import (
@@ -542,6 +543,9 @@ def main(argv: list[str] | None = None) -> int:
     except OutputPathError as error:
         LOGGER.error("output_path_rejected", error=str(error))
         return int(ExitCode.OUTPUT_PATH_REJECTED)
+    except TargetDatabaseError as error:
+        LOGGER.error("target_database_missing", error=str(error))
+        return int(ExitCode.UI_DB_ACCESS_FAILED)
     except ExporterError as error:
         LOGGER.error("export_failed", error=str(error))
         return int(ExitCode.UI_DB_ACCESS_FAILED)

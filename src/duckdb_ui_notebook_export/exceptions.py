@@ -177,6 +177,33 @@ class OutputPathError(ExporterError):
     """
 
 
+class TargetDatabaseError(ExporterError):
+    """Raised when ``--db`` cannot be used as a valid execution target.
+
+    Parameters
+    ----------
+    *args
+        Positional exception message arguments inherited from ``Exception``.
+
+    Returns
+    -------
+    None
+        Exception classes do not return values.
+
+    Raises
+    ------
+    None
+        Instantiating the exception does not raise package-specific errors.
+
+    Notes
+    -----
+    Covers a plain local ``--db`` path that does not exist (a likely typo;
+    DuckDB would otherwise silently create an empty database file there) and
+    ``--read-only`` combined with a target that cannot be opened read-only
+    (``:memory:`` or a nonexistent file).
+    """
+
+
 class ExitCode(enum.IntEnum):
     """Process exit codes for the command-line interface.
 
