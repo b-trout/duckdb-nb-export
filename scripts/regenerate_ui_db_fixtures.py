@@ -261,6 +261,17 @@ def _build_fixture_with_fallback_sql(ui_db_path: Path) -> None:
 
     primary_id = str(uuid.uuid4())
     duplicate_id = str(uuid.uuid4())
+    # Real DuckDB UI notebooks store an internal slug in notebooks.name (for
+    # example "notebook_OR_g9u20SBN9") and keep the user-visible display name
+    # in notebook_versions.title of every version row, not in notebooks.name.
+    # This was discovered by diffing a real-browser-derived ui.db fixture
+    # against this fallback's previous (incorrect) assumption that
+    # notebooks.name was the display name (design doc 6.3#9 real-fixture
+    # finding). The fallback mirrors that: notebooks.name gets a
+    # slug-shaped placeholder, and title carries PRIMARY_NOTEBOOK_NAME /
+    # DUPLICATE_NOTEBOOK_NAME unchanged across versions.
+    primary_slug = f"notebook_{uuid.uuid4().hex[:10]}"
+    duplicate_slug = f"notebook_{uuid.uuid4().hex[:10]}"
 
     primary_v1_json = _build_notebook_json(
         [
@@ -362,12 +373,12 @@ def _build_fixture_with_fallback_sql(ui_db_path: Path) -> None:
         con.execute(
             "INSERT INTO fixture.notebooks(id, name, created) VALUES (?, ?, "
             "TIMESTAMP '2026-07-05 06:30:00')",
-            [primary_id, PRIMARY_NOTEBOOK_NAME],
+            [primary_id, primary_slug],
         )
         con.execute(
             "INSERT INTO fixture.notebooks(id, name, created) VALUES (?, ?, "
             "TIMESTAMP '2026-07-05 07:00:00')",
-            [duplicate_id, DUPLICATE_NOTEBOOK_NAME],
+            [duplicate_id, duplicate_slug],
         )
 
         con.execute(
@@ -383,13 +394,13 @@ def _build_fixture_with_fallback_sql(ui_db_path: Path) -> None:
             """,
             [
                 primary_id,
-                f"{PRIMARY_NOTEBOOK_NAME} v1",
+                PRIMARY_NOTEBOOK_NAME,
                 primary_v1_json,
                 primary_id,
-                f"{PRIMARY_NOTEBOOK_NAME} v2",
+                PRIMARY_NOTEBOOK_NAME,
                 primary_v2_json,
                 primary_id,
-                f"{PRIMARY_NOTEBOOK_NAME} v3",
+                PRIMARY_NOTEBOOK_NAME,
                 primary_v3_json,
             ],
         )
@@ -399,7 +410,7 @@ def _build_fixture_with_fallback_sql(ui_db_path: Path) -> None:
               notebook_id, version, title, json, created, expires
             ) VALUES (?, 1, ?, ?, TIMESTAMP '2026-07-05 07:01:00', NULL)
             """,
-            [duplicate_id, f"{DUPLICATE_NOTEBOOK_NAME} v1", duplicate_v1_json],
+            [duplicate_id, DUPLICATE_NOTEBOOK_NAME, duplicate_v1_json],
         )
         con.execute(
             "INSERT INTO fixture.current_notebook_id(id) VALUES (?)", [primary_id]
