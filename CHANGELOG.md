@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SECURITY.md` documents how to report vulnerabilities privately (GitHub
+  private vulnerability reporting), the best-effort 14-day acknowledgement
+  expectation for this solo-maintainer alpha project, the
+  latest-release-only support policy, and scope notes distinguishing
+  by-design behavior (executing notebook SQL with the caller's
+  privileges; the already-documented `CREATE SECRET` masking gaps) from
+  in-scope reports (masking bypasses and other vulnerabilities). Linked
+  from the README's Safety model section
+  ([#65](https://github.com/b-trout/duckdb-nb-export/issues/65)).
 - `.github/dependabot.yml` now proposes weekly update PRs for GitHub
   Actions pins and Python dependencies (grouped by minor/patch to reduce
   PR noise); previously nothing updated action tags or `uv.lock`
