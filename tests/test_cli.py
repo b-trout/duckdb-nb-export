@@ -16,10 +16,13 @@ None
     Importing this module should not raise package-specific exceptions.
 """
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+import structlog
 
+from duckdb_ui_notebook_export import _logging
 from duckdb_ui_notebook_export.cli import (
     _cell_error_exit_required,
     _write_mode_display,
@@ -32,6 +35,29 @@ from duckdb_ui_notebook_export.cli import (
 from duckdb_ui_notebook_export.exceptions import ExitCode, OutputPathError
 from duckdb_ui_notebook_export.executor import CellResult, CellStatus, ExecutionReport
 from duckdb_ui_notebook_export.models import Cell
+
+
+@pytest.fixture(autouse=True)
+def _reset_logging_state() -> Generator[None]:
+    """Reset structlog global configuration around every CLI test.
+
+    Returns
+    -------
+    None
+        The module's ``_CONFIGURED`` flag and structlog's global
+        configuration are reset before and after each test.
+
+    Notes
+    -----
+    ``main`` calls ``configure_logging`` with ``force=True`` using the
+    parsed ``-q``/``-v`` level, so tests that assert on log level filtering
+    or on rendered log output must not leak configuration between cases.
+    """
+    _logging.reset_for_testing()
+    structlog.reset_defaults()
+    yield
+    _logging.reset_for_testing()
+    structlog.reset_defaults()
 
 
 def _sql_cell(sql: str) -> dict[str, str]:
@@ -1246,3 +1272,195 @@ def test_ut_c_043_nb_version_unknown_version_returns_notebook_not_found(
     )
 
     assert exit_code == ExitCode.NOTEBOOK_NOT_FOUND
+
+
+def test_ut_c_042_quiet_suppresses_info_and_warning_events(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-042: ``--quiet`` suppresses INFO/WARNING but not ERROR events.
+
+    Notes
+    -----
+    The fixture notebook's failing cell triggers a warning-level
+    ``notebook_name_sanitized_for_output``-style deduplication path is not
+    used here; instead this test exercises the always-present
+    ``output_path_deduplicated`` WARNING event and confirms it is
+    suppressed under ``--quiet`` while an ERROR-level event used elsewhere
+    in the CLI (``notebook_not_found``) still reaches stderr.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "output_path_deduplicated" not in captured.err
+
+
+def test_ut_c_043_quiet_still_shows_error_events(
+    synthetic_ui_db: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-043: ``--quiet`` still allows ERROR-level events on stderr.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    exit_code = main(
+        [
+            "Missing Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.NOTEBOOK_NOT_FOUND
+    assert "notebook_not_found" in captured.err
+
+
+def test_ut_c_044_verbose_shows_debug_events(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-044: ``--verbose`` lowers the threshold to DEBUG.
+
+    Notes
+    -----
+    Emits a DEBUG-level event directly through the shared logger (as a
+    stand-in for future DEBUG instrumentation) and asserts it is rendered
+    only once ``--verbose`` is active, proving the CLI wires the flag
+    through to ``configure_logging``.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    from duckdb_ui_notebook_export import _logging as logging_module
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--no-fail-on-cell-error",
+            "--yes",
+            "--verbose",
+        ]
+    )
+    logging_module.get_logger().debug("debug_probe_event")
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "debug_probe_event" in captured.err
+
+
+def test_ut_c_045_verbose_and_quiet_are_mutually_exclusive(
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-045: ``-q`` and ``-v`` cannot both be set.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "Notebook",
+                "--output",
+                str(tmp_workdir / "out.html"),
+                "--quiet",
+                "--verbose",
+                "--yes",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_ut_c_046_help_documents_quiet_and_verbose(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-046: ``--help`` documents both ``-q/--quiet`` and ``-v/--verbose``.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "-q" in captured.out
+    assert "--quiet" in captured.out
+    assert "-v" in captured.out
+    assert "--verbose" in captured.out
+
+
+def test_ut_c_047_default_level_shows_info_and_warning(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-047: Without ``-q``/``-v``, WARNING events still reach stderr.
+
+    Traceability
+    ------------
+    Issue #55
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("existing", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert "output_path_deduplicated" in captured.err

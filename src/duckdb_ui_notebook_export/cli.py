@@ -22,6 +22,7 @@ and orchestration across the reader, executor, and renderer layers.
 """
 
 import argparse
+import logging
 import math
 import re
 import sys
@@ -501,8 +502,15 @@ def main(argv: list[str] | None = None) -> int:
     ------
     SystemExit
         Raised by ``argparse`` for help text or invalid arguments.
+
+    Notes
+    -----
+    Logging is configured with ``force=True`` after argument parsing, once
+    ``-q``/``--quiet`` and ``-v``/``--verbose`` are known, so the CLI's
+    chosen level always wins over any earlier default ``configure_logging``
+    call (for example one made by a library import or a previous call in
+    the same process).
     """
-    _logging.configure_logging()
     parser = argparse.ArgumentParser(
         prog="duckdb-nb-export",
         description="Export a DuckDB UI notebook to static HTML.",
@@ -613,7 +621,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the execution confirmation prompt.",
     )
+    verbosity_group = parser.add_mutually_exclusive_group()
+    verbosity_group.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Only show ERROR-level log events on stderr. Mutually "
+        "exclusive with -v/--verbose.",
+    )
+    verbosity_group.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show DEBUG-level log events on stderr in addition to the "
+        "default INFO level. Mutually exclusive with -q/--quiet.",
+    )
     args = parser.parse_args(argv)
+
+    if args.quiet:
+        log_level = logging.ERROR
+    elif args.verbose:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+    _logging.configure_logging(level=log_level, force=True)
 
     if not args.list and args.notebook_name is None and args.notebook_id is None:
         parser.error(

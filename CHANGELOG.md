@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `-q`/`--quiet` and `-v`/`--verbose` flags to control log verbosity on
+  stderr: `--quiet` raises the threshold to `ERROR` only, `--verbose`
+  lowers it to `DEBUG`, and the default remains `INFO`. The two flags are
+  mutually exclusive
+  ([#55](https://github.com/b-trout/duckdb-nb-export/issues/55)).
+
 ### Fixed
 
 - Log output no longer emits ANSI color escape codes when stderr is not a

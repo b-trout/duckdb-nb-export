@@ -190,6 +190,8 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--no-external-access` | Disable DuckDB external access during execution. | Off |
 | `--require-ui-closed` | Open `ui.db` directly and require DuckDB UI to be closed. | Off |
 | `--yes` | Skip the execution confirmation prompt. | Off |
+| `-q`, `--quiet` | Only show `ERROR`-level log events on stderr. Mutually exclusive with `-v`/`--verbose`. | Off |
+| `-v`, `--verbose` | Show `DEBUG`-level log events on stderr in addition to the default. Mutually exclusive with `-q`/`--quiet`. | Off |
 
 Existing output files are not overwritten; a numeric suffix is added. On
 success, the CLI prints the final output path (after any numeric-suffix
