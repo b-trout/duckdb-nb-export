@@ -115,6 +115,103 @@ def _require_ui_db_exists(ui_db_path: Path) -> None:
         )
 
 
+_EXPECTED_SCHEMA: dict[str, list[str]] = {
+    "notebooks": ["id", "name", "created"],
+    "notebook_versions": [
+        "notebook_id",
+        "version",
+        "title",
+        "json",
+        "created",
+        "expires",
+    ],
+}
+
+
+def _schema_drift_error(ui_db_path: Path, what: str) -> UiDbAccessError:
+    """Build the schema-drift error for a missing expected table or column.
+
+    Parameters
+    ----------
+    ui_db_path
+        Path to the ``ui.db`` file (or snapshot) that failed the preflight.
+    what
+        Human-readable description of the missing table or column, for
+        example ``"table 'notebooks'"`` or ``"column 'notebook_versions.expires'"``.
+
+    Returns
+    -------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError
+        Error describing the schema mismatch without leaking internal SQL.
+    """
+    return UiDbAccessError(
+        f"The database at {ui_db_path} does not look like a DuckDB UI ui.db "
+        f"(missing expected table/column {what}). Either the path is wrong, "
+        "or DuckDB UI's internal schema changed; check for a newer "
+        "duckdb-nb-export release: "
+        "https://github.com/b-trout/duckdb-nb-export"
+    )
+
+
+def _check_schema(connection: duckdb.DuckDBPyConnection, ui_db_path: Path) -> None:
+    """Verify that a connection exposes the expected DuckDB UI schema.
+
+    Parameters
+    ----------
+    connection
+        Open DuckDB connection to the UI database or its snapshot.
+    ui_db_path
+        Path to the ``ui.db`` file (or snapshot), used only for the error
+        message.
+
+    Returns
+    -------
+    None
+        Returns normally when every expected table and column is present.
+
+    Raises
+    ------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError
+        Raised when an expected table or column is missing, with a message
+        that explains the database does not look like a DuckDB UI ``ui.db``
+        instead of leaking the internal preflight query or a raw DuckDB
+        Catalog Error.
+
+    Notes
+    -----
+    This preflight runs once per connection, immediately after opening,
+    so that a genuinely missing table (for example, an unrelated DuckDB
+    file passed as ``--ui-db``, or a future DuckDB UI schema change) is
+    reported as a schema mismatch rather than surfacing later as a raw
+    "Catalog Error: Table with name notebooks does not exist!" from
+    whichever query happened to touch it first (see GitHub issue #60).
+    """
+    try:
+        existing_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT table_name FROM information_schema.tables"
+            ).fetchall()
+        }
+        for table, columns in _EXPECTED_SCHEMA.items():
+            if table not in existing_tables:
+                raise _schema_drift_error(ui_db_path, f"table {table!r}")
+
+            existing_columns = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = ?",
+                    [table],
+                ).fetchall()
+            }
+            for column in columns:
+                if column not in existing_columns:
+                    raise _schema_drift_error(ui_db_path, f"column {table}.{column!r}")
+    except duckdb.Error as error:
+        raise _schema_drift_error(ui_db_path, "schema") from error
+
+
 def _connect_read_only(ui_db_path: Path) -> duckdb.DuckDBPyConnection:
     """Open a DuckDB database in read-only mode with reader error mapping."""
     try:
@@ -587,13 +684,24 @@ def open_ui_db(
     """
     if require_ui_closed:
         _require_ui_db_exists(ui_db_path)
-        return _connect_read_only(ui_db_path)
+        connection = _connect_read_only(ui_db_path)
+        try:
+            _check_schema(connection, ui_db_path)
+        except Exception:
+            _close_quietly(connection)
+            raise
+        return connection
 
     _cleanup_stale_snapshots()
     snapshot_dir = Path(tempfile.mkdtemp(prefix="duckdb-ui-notebook-export-"))
     try:
         copied_db_path = copy_ui_db(ui_db_path, snapshot_dir)
         connection = _connect_read_only(copied_db_path)
+        try:
+            _check_schema(connection, ui_db_path)
+        except Exception:
+            _close_quietly(connection)
+            raise
     except Exception:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
         raise

@@ -1214,3 +1214,116 @@ def test_ut_r_029_format_three_still_loads(tmp_path: Path) -> None:
     notebook = load_notebook(ui_db_path, "Format Three Notebook")
 
     assert notebook.name == "Format Three Notebook"
+
+
+def test_ut_r_030_missing_notebooks_table_reports_schema_drift(
+    tmp_path: Path,
+) -> None:
+    """UT-R-030: a DuckDB file missing the ``notebooks`` table gives a clear error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a valid but schema-incompatible
+        DuckDB file.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` raises ``UiDbAccessError``
+        with a message that explains the database does not look like a
+        DuckDB UI ``ui.db``, and that the misleading "Cannot open" framing
+        and raw SQL error text are absent.
+
+    Notes
+    -----
+    Traceability: GitHub issue #60. Previously this case surfaced as
+    "Cannot open DuckDB UI database at ...: Catalog Error: Table with name
+    notebooks does not exist!\\nDid you mean \\"pg_tables\\"? ...", which
+    leaked internal SQL and implied a corrupt/unopenable file rather than a
+    schema mismatch.
+    """
+    ui_db_path = tmp_path / "ui.db"
+    with duckdb.connect(str(ui_db_path)) as connection:
+        connection.execute("CREATE TABLE unrelated(i INTEGER)")
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        list_notebooks(ui_db_path)
+
+    message = str(error_info.value)
+    assert "does not look like a DuckDB UI ui.db" in message
+    assert "notebooks" in message
+    assert "Cannot open" not in message
+    assert "Catalog Error" not in message
+    assert "pg_tables" not in message
+
+
+def test_ut_r_031_missing_expected_column_reports_schema_drift(
+    tmp_path: Path,
+) -> None:
+    """UT-R-031: a table missing an expected column gives a clear schema error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a schema-incompatible DuckDB file.
+
+    Returns
+    -------
+    None
+        The test asserts that a ``notebook_versions`` table missing the
+        expected ``expires`` column raises ``UiDbAccessError`` naming the
+        missing table/column, without the "Cannot open" framing.
+
+    Notes
+    -----
+    Traceability: GitHub issue #60.
+    """
+    ui_db_path = tmp_path / "ui.db"
+    with duckdb.connect(str(ui_db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE notebooks("
+            "id UUID NOT NULL PRIMARY KEY, name VARCHAR NOT NULL, "
+            "created TIMESTAMP NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE notebook_versions("
+            "notebook_id UUID NOT NULL, version INTEGER NOT NULL, "
+            "title VARCHAR NOT NULL, json VARCHAR NOT NULL, "
+            "created TIMESTAMP NOT NULL, "
+            "PRIMARY KEY (notebook_id, version))"
+        )
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        list_notebooks(ui_db_path)
+
+    message = str(error_info.value)
+    assert "does not look like a DuckDB UI ui.db" in message
+    assert "expires" in message or "notebook_versions" in message
+    assert "Cannot open" not in message
+
+
+def test_ut_r_032_fixture_ui_db_passes_schema_preflight(
+    synthetic_ui_db: Path,
+) -> None:
+    """UT-R-032: the synthetic fixture still passes the new schema preflight.
+
+    Parameters
+    ----------
+    synthetic_ui_db
+        Generated DuckDB UI database fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` still succeeds against the
+        existing synthetic fixture after the schema preflight is added,
+        guarding against a preflight that is too strict.
+
+    Notes
+    -----
+    Traceability: GitHub issue #60.
+    """
+    notebooks = list_notebooks(synthetic_ui_db)
+
+    assert notebooks
