@@ -934,6 +934,22 @@ def execute_notebook(
                 abandoned=True,
             )
 
+        # The per-break-path commit_impossible bookkeeping above can miss
+        # abort states reached through other exits from the cell loop (for
+        # example stop_on_error breaking before the abort check), so the
+        # final commit decision re-probes the transaction state. Committing
+        # an aborted transaction either raises or silently degrades to a
+        # rollback depending on the DuckDB version; both must surface as
+        # the explicit no-commit warning instead. This probe never runs on
+        # the abandoned path, which returned above without touching the
+        # connection.
+        if (
+            allow_writes
+            and not commit_impossible
+            and _transaction_is_aborted(connection)
+        ):
+            commit_impossible = True
+
         if allow_writes and not commit_impossible:
             connection.execute("COMMIT")
         else:

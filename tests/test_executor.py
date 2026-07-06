@@ -995,6 +995,52 @@ def test_ut_x_037_allow_writes_error_abort_never_partial_commits(
     assert not table_exists(fresh_duckdb, "allow_writes_abort")
 
 
+def test_ut_x_041_stop_on_error_allow_writes_abort_never_commits(
+    fresh_duckdb: Path,
+) -> None:
+    """UT-X-041: stop_on_error + allow_writes never COMMITs an aborted txn.
+
+    Notes
+    -----
+    With ``stop_on_error=True`` the error branch breaks out of the cell
+    loop before the ``_transaction_is_aborted`` check that sets
+    ``commit_impossible``, so the final handling used to reach
+    ``COMMIT`` on an aborted transaction. Depending on the DuckDB
+    version that either raises (propagating out of ``execute_notebook``
+    with no HTML at all) or silently degrades to a rollback with no
+    warning that nothing was committed. The final commit decision must
+    therefore re-probe the transaction state for every break path:
+    ``execute_notebook`` must return a normal report, roll back, and
+    carry the "No changes were committed" warning.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    notebook = make_notebook(
+        "CREATE TABLE stop_abort(id INTEGER PRIMARY KEY);"
+        "INSERT INTO stop_abort VALUES (1);",
+        "INSERT INTO stop_abort VALUES (1);",
+        "SELECT 99 AS should_not_run;",
+    )
+
+    report = execute_notebook(
+        notebook,
+        str(fresh_duckdb),
+        allow_writes=True,
+        stop_on_error=True,
+    )
+
+    assert [result.status for result in report.cell_results] == [
+        CellStatus.OK,
+        CellStatus.ERROR,
+    ]
+    assert any(
+        "no changes were committed" in warning.lower() for warning in report.warnings
+    )
+    assert not table_exists(fresh_duckdb, "stop_abort")
+
+
 def test_ut_x_038_allow_writes_timeout_abort_is_terminal_not_restarted(
     fresh_duckdb: Path,
     monkeypatch: pytest.MonkeyPatch,
