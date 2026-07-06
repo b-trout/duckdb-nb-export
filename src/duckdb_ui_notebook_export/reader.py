@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import shutil
 import tempfile
@@ -21,6 +22,7 @@ from duckdb_ui_notebook_export.exceptions import (
     NotebookNotFoundError,
     StorageVersionMismatchError,
     UiDbAccessError,
+    UnsupportedNotebookFormatError,
 )
 from duckdb_ui_notebook_export.models import (
     Cell,
@@ -31,6 +33,7 @@ from duckdb_ui_notebook_export.models import (
 )
 
 DEFAULT_UI_DB_PATH: Path = Path.home() / ".duckdb" / "extension_data" / "ui" / "ui.db"
+SUPPORTED_NOTEBOOK_FORMAT = 3
 _FETCH_CHUNK_SIZE = 1000
 _LOGGER = structlog.get_logger()
 _SYNTHETIC_UUID_NAMESPACE = uuid.UUID("d1ffdc0d-0000-4000-8000-000000000001")
@@ -72,6 +75,55 @@ def _is_storage_version_error(error: Exception) -> bool:
     )
 
 
+_DETERMINISTIC_COPY_ERRNOS = frozenset(
+    {errno.ENOSPC, errno.EACCES, errno.EROFS, errno.ENAMETOOLONG}
+)
+
+
+def _deterministic_copy_error(
+    error: Exception, dest_dir: Path
+) -> UiDbAccessError | None:
+    """Classify a copy failure as deterministic (not worth retrying).
+
+    Parameters
+    ----------
+    error
+        Exception raised while copying or validating the snapshot.
+    dest_dir
+        Destination directory the snapshot was being copied into, named in
+        the resulting error message.
+
+    Returns
+    -------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError or None
+        A ready-to-raise error naming the real cause and destination
+        directory when ``error`` is an ``OSError`` with an errno that is
+        never transient (``ENOSPC``, ``EACCES``, ``EROFS``,
+        ``ENAMETOOLONG``); ``None`` when ``error`` should still be retried.
+
+    Notes
+    -----
+    ``copy_ui_db`` previously retried every failure three times, 0.5
+    seconds apart, then always raised a "the UI may be running" hint. That
+    hint is wrong and the retries are pointless for an out-of-space,
+    permission, or read-only-filesystem error, since retrying does not
+    change disk space, permissions, or mount state (see GitHub issue #64).
+    Other ``OSError``s (for example a transient ``EBUSY`` on some
+    platforms) and non-``OSError`` failures (for example a DuckDB
+    validation error while the UI is genuinely writing to ``ui.db``) are
+    left to the existing retry-then-hint path.
+    """
+    if not isinstance(error, OSError) or error.errno not in _DETERMINISTIC_COPY_ERRNOS:
+        return None
+
+    message = f"Cannot create ui.db snapshot in {dest_dir}: {error}."
+    if error.errno == errno.ENOSPC:
+        message += (
+            " Free space in the temp directory or set TMPDIR to a different location."
+        )
+    return UiDbAccessError(message)
+
+
 def _map_duckdb_open_error(error: Exception, ui_db_path: Path) -> UiDbAccessError:
     """Map DuckDB open failures to package exceptions."""
     if _is_storage_version_error(error):
@@ -111,6 +163,103 @@ def _require_ui_db_exists(ui_db_path: Path) -> None:
             f"ui.db not found at {ui_db_path}. Pass --ui-db or start DuckDB UI "
             "once to create it."
         )
+
+
+_EXPECTED_SCHEMA: dict[str, list[str]] = {
+    "notebooks": ["id", "name", "created"],
+    "notebook_versions": [
+        "notebook_id",
+        "version",
+        "title",
+        "json",
+        "created",
+        "expires",
+    ],
+}
+
+
+def _schema_drift_error(ui_db_path: Path, what: str) -> UiDbAccessError:
+    """Build the schema-drift error for a missing expected table or column.
+
+    Parameters
+    ----------
+    ui_db_path
+        Path to the ``ui.db`` file (or snapshot) that failed the preflight.
+    what
+        Human-readable description of the missing table or column, for
+        example ``"table 'notebooks'"`` or ``"column 'notebook_versions.expires'"``.
+
+    Returns
+    -------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError
+        Error describing the schema mismatch without leaking internal SQL.
+    """
+    return UiDbAccessError(
+        f"The database at {ui_db_path} does not look like a DuckDB UI ui.db "
+        f"(missing expected table/column {what}). Either the path is wrong, "
+        "or DuckDB UI's internal schema changed; check for a newer "
+        "duckdb-nb-export release: "
+        "https://github.com/b-trout/duckdb-nb-export"
+    )
+
+
+def _check_schema(connection: duckdb.DuckDBPyConnection, ui_db_path: Path) -> None:
+    """Verify that a connection exposes the expected DuckDB UI schema.
+
+    Parameters
+    ----------
+    connection
+        Open DuckDB connection to the UI database or its snapshot.
+    ui_db_path
+        Path to the ``ui.db`` file (or snapshot), used only for the error
+        message.
+
+    Returns
+    -------
+    None
+        Returns normally when every expected table and column is present.
+
+    Raises
+    ------
+    duckdb_ui_notebook_export.exceptions.UiDbAccessError
+        Raised when an expected table or column is missing, with a message
+        that explains the database does not look like a DuckDB UI ``ui.db``
+        instead of leaking the internal preflight query or a raw DuckDB
+        Catalog Error.
+
+    Notes
+    -----
+    This preflight runs once per connection, immediately after opening,
+    so that a genuinely missing table (for example, an unrelated DuckDB
+    file passed as ``--ui-db``, or a future DuckDB UI schema change) is
+    reported as a schema mismatch rather than surfacing later as a raw
+    "Catalog Error: Table with name notebooks does not exist!" from
+    whichever query happened to touch it first (see GitHub issue #60).
+    """
+    try:
+        existing_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT table_name FROM information_schema.tables"
+            ).fetchall()
+        }
+        for table, columns in _EXPECTED_SCHEMA.items():
+            if table not in existing_tables:
+                raise _schema_drift_error(ui_db_path, f"table {table!r}")
+
+            existing_columns = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = ?",
+                    [table],
+                ).fetchall()
+            }
+            for column in columns:
+                if column not in existing_columns:
+                    raise _schema_drift_error(ui_db_path, f"column {table}.{column!r}")
+    except duckdb.Error as error:
+        raise _schema_drift_error(ui_db_path, "schema") from error
 
 
 def _connect_read_only(ui_db_path: Path) -> duckdb.DuckDBPyConnection:
@@ -382,6 +531,15 @@ def _to_internal_notebook(
             f"Notebook {name!r} version {version} has invalid stored JSON: {error}"
         ) from error
 
+    if stored_notebook.notebook_serialization_format != SUPPORTED_NOTEBOOK_FORMAT:
+        raise UnsupportedNotebookFormatError(
+            f"Notebook {name!r} uses stored notebook format "
+            f"v{stored_notebook.notebook_serialization_format}; this "
+            "duckdb-nb-export release supports v"
+            f"{SUPPORTED_NOTEBOOK_FORMAT} only. Check for a newer "
+            "duckdb-nb-export release."
+        )
+
     return Notebook(
         name=name,
         version_id=str(version),
@@ -450,6 +608,9 @@ def copy_ui_db(
             last_error = error
             if _is_storage_version_error(error):
                 raise _map_duckdb_open_error(error, copied_db_path) from error
+            deterministic_error = _deterministic_copy_error(error, dest_dir)
+            if deterministic_error is not None:
+                raise deterministic_error from error
             _LOGGER.warning(
                 "ui_db_snapshot_validation_failed",
                 attempt=attempt,
@@ -576,13 +737,24 @@ def open_ui_db(
     """
     if require_ui_closed:
         _require_ui_db_exists(ui_db_path)
-        return _connect_read_only(ui_db_path)
+        connection = _connect_read_only(ui_db_path)
+        try:
+            _check_schema(connection, ui_db_path)
+        except Exception:
+            _close_quietly(connection)
+            raise
+        return connection
 
     _cleanup_stale_snapshots()
     snapshot_dir = Path(tempfile.mkdtemp(prefix="duckdb-ui-notebook-export-"))
     try:
         copied_db_path = copy_ui_db(ui_db_path, snapshot_dir)
         connection = _connect_read_only(copied_db_path)
+        try:
+            _check_schema(connection, ui_db_path)
+        except Exception:
+            _close_quietly(connection)
+            raise
     except Exception:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
         raise
@@ -764,9 +936,12 @@ def load_notebook(
 
         rows = list(_iter_rows(cursor))
         if not rows:
-            raise UiDbAccessError(
-                f"Notebook {name!r} version {version_id or 'current'} was not found."
+            error = NotebookNotFoundError(
+                f"Notebook {notebook.name!r} version {version_id or 'current'} "
+                "was not found. Use --list-versions to see available versions."
             )
+            error.available_names = [notebook.name]
+            raise error
         version, raw_json = rows[0]
         return _to_internal_notebook(
             name=notebook.name,

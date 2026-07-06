@@ -33,6 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `--nb-version` now rejects a non-integer value at the
+  argument-parsing stage (exit code 2) instead of reaching the reader and
+  failing with a `ui.db access failed` message (exit code 4). An unknown
+  but well-formed version now raises `NotebookNotFoundError` (exit code 1)
+  instead of `UiDbAccessError` (exit code 4), and its message names the
+  resolved notebook's display name (never a raw `None`) and points at
+  `--list-versions`
+  ([#48](https://github.com/b-trout/duckdb-nb-export/issues/48)).
+- **Breaking:** A stored notebook whose `notebookSerializationFormat` is
+  not 3 now hard-fails with a new `UnsupportedNotebookFormatError` (exit
+  code 4) instead of being silently parsed and exported with no warning.
+  Only stored notebook format v3 is supported by this release
+  ([#58](https://github.com/b-trout/duckdb-nb-export/issues/58)).
 - `--max-rows` and `--cell-timeout` now reject non-positive values
   (`--max-rows` must be an integer >= 1; `--cell-timeout` and
   `--interrupt-grace` must be positive, finite numbers) with a clear
@@ -82,6 +95,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `ui.db` path that opens as a valid DuckDB file but does not have the
+  expected `notebooks` / `notebook_versions` tables or columns (for
+  example, an unrelated DuckDB file passed as `--ui-db`, or a future
+  DuckDB UI schema change) now raises a clear `UiDbAccessError` explaining
+  that the database does not look like a DuckDB UI `ui.db`, instead of a
+  misleading "Cannot open" message that leaked the internal preflight
+  query and a raw DuckDB Catalog Error
+  ([#60](https://github.com/b-trout/duckdb-nb-export/issues/60)).
+- `copy_ui_db` no longer retries deterministic copy failures (out of disk
+  space, permission denied, read-only filesystem, or a destination path
+  that is too long) three times before raising a misleading "the UI may
+  be running" hint. These errno-classified `OSError`s now fail
+  immediately with a message naming the real cause and the destination
+  temp directory. Transient/unclassified failures (for example, a
+  genuine validation failure while the UI is writing to `ui.db`) still
+  retry and raise the existing "UI may be running" hint unchanged
+  ([#64](https://github.com/b-trout/duckdb-nb-export/issues/64)).
 - Stale `ui.db` snapshot directories left behind by a crashed or killed
   process no longer accumulate indefinitely: each snapshot-path call to
   `open_ui_db` now opportunistically removes snapshot directories older

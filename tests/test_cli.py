@@ -1084,3 +1084,49 @@ def test_ut_c_041_main_warns_and_prints_deduped_path_when_target_exists(
     assert str(output) in captured.err
     assert str(deduped) in captured.err
     assert deduped.exists()
+
+
+def test_ut_c_042_nb_version_rejects_non_integer_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-042: ``--nb-version`` rejects a non-integer value at argparse level.
+
+    Traceability
+    ------------
+    Issue #48
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--nb-version", "abc", "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--nb-version" in captured.err
+
+
+def test_ut_c_043_nb_version_unknown_version_returns_notebook_not_found(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-043: an unknown ``--nb-version`` maps to exit code 1, not 4.
+
+    Traceability
+    ------------
+    Issue #48
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--nb-version",
+            "99",
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.NOTEBOOK_NOT_FOUND

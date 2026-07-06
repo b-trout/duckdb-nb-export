@@ -1060,3 +1060,419 @@ def test_ut_r_025_run_mode_cells_load_as_sql_and_render_no_chart_note(
     )
 
     assert "Chart rendering is not supported" not in html
+
+
+def test_ut_r_026_unknown_nb_version_reports_display_name_and_hint(
+    synthetic_ui_db: Path,
+) -> None:
+    """UT-R-026: an unknown ``--nb-version`` names the resolved notebook.
+
+    Parameters
+    ----------
+    synthetic_ui_db
+        Generated DuckDB UI database fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that ``load_notebook`` raises
+        ``NotebookNotFoundError`` (not ``UiDbAccessError``) for an unknown
+        version, that the message uses the resolved notebook's *display*
+        name rather than a stringified ``None``, and that it points at
+        ``--list-versions``.
+
+    Notes
+    -----
+    Traceability: GitHub issue #48. Previously an unknown version raised
+    ``UiDbAccessError`` (mapped to exit code 4) whose message could read
+    "Notebook None version 99 was not found." when the caller only passed
+    ``--notebook-id`` and left the raw ``name`` argument as ``None``.
+    """
+    with pytest.raises(NotebookNotFoundError) as error_info:
+        load_notebook(synthetic_ui_db, "reader-notebook", version_id="99")
+
+    message = str(error_info.value)
+    assert "reader-notebook" in message
+    assert "None" not in message
+    assert "--list-versions" in message
+
+
+def test_ut_r_027_unsupported_stored_notebook_format_hard_fails(
+    tmp_path: Path,
+) -> None:
+    """UT-R-027: an unsupported stored notebook format raises a clear error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that a stored notebook JSON whose
+        ``notebookSerializationFormat`` is not the supported value 3 raises
+        ``UnsupportedNotebookFormatError`` (a ``UiDbAccessError`` subclass)
+        naming the notebook, the encountered format version, and the
+        supported format version.
+
+    Notes
+    -----
+    Traceability: GitHub issue #58. Previously an unknown
+    ``notebookSerializationFormat`` was silently accepted and exported with
+    no warning.
+    """
+    from duckdb_ui_notebook_export.exceptions import UnsupportedNotebookFormatError
+
+    ui_db_path = tmp_path / "ui.db"
+    notebook_id = "55555555-5555-5555-5555-555555555555"
+    stored_json = (
+        '{"notebookSerializationFormat": 4, "cells": ['
+        '{"query": "SELECT 1", "cellId": 1, "isActive": true, '
+        '"runMode": "default"}'
+        '], "viewMode": {"mode": "default"}, "version": 1}'
+    )
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [notebook_id, "notebook_futurefmt0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [notebook_id, "Future Format Notebook", stored_json],
+        )
+    finally:
+        connection.close()
+
+    with pytest.raises(UnsupportedNotebookFormatError) as error_info:
+        load_notebook(ui_db_path, "Future Format Notebook")
+
+    message = str(error_info.value)
+    assert "Future Format Notebook" in message
+    assert "v4" in message
+    assert "v3" in message
+
+
+def test_ut_r_028_supported_notebook_format_constant_is_three() -> None:
+    """UT-R-028: the supported stored notebook format constant equals 3.
+
+    Returns
+    -------
+    None
+        The test asserts that ``SUPPORTED_NOTEBOOK_FORMAT`` is deliberately
+        pinned to ``3`` so that future bumps require a conscious code change
+        (and an accompanying test update) instead of silently drifting.
+
+    Notes
+    -----
+    Traceability: GitHub issue #58.
+    """
+    from duckdb_ui_notebook_export.reader import SUPPORTED_NOTEBOOK_FORMAT
+
+    assert SUPPORTED_NOTEBOOK_FORMAT == 3
+
+
+def test_ut_r_029_format_three_still_loads(tmp_path: Path) -> None:
+    """UT-R-029: stored notebook format v3 continues to load without error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that a notebook whose
+        ``notebookSerializationFormat`` is 3 loads successfully.
+
+    Notes
+    -----
+    Traceability: GitHub issue #58 (regression guard for the new hard-fail
+    check).
+    """
+    ui_db_path = tmp_path / "ui.db"
+    notebook_id = "66666666-6666-6666-6666-666666666666"
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [notebook_id, "notebook_fmt3ok0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [notebook_id, "Format Three Notebook", _MINIMAL_STORED_NOTEBOOK_JSON],
+        )
+    finally:
+        connection.close()
+
+    notebook = load_notebook(ui_db_path, "Format Three Notebook")
+
+    assert notebook.name == "Format Three Notebook"
+
+
+def test_ut_r_030_missing_notebooks_table_reports_schema_drift(
+    tmp_path: Path,
+) -> None:
+    """UT-R-030: a DuckDB file missing the ``notebooks`` table gives a clear error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a valid but schema-incompatible
+        DuckDB file.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` raises ``UiDbAccessError``
+        with a message that explains the database does not look like a
+        DuckDB UI ``ui.db``, and that the misleading "Cannot open" framing
+        and raw SQL error text are absent.
+
+    Notes
+    -----
+    Traceability: GitHub issue #60. Previously this case surfaced as
+    "Cannot open DuckDB UI database at ...: Catalog Error: Table with name
+    notebooks does not exist!\\nDid you mean \\"pg_tables\\"? ...", which
+    leaked internal SQL and implied a corrupt/unopenable file rather than a
+    schema mismatch.
+    """
+    ui_db_path = tmp_path / "ui.db"
+    with duckdb.connect(str(ui_db_path)) as connection:
+        connection.execute("CREATE TABLE unrelated(i INTEGER)")
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        list_notebooks(ui_db_path)
+
+    message = str(error_info.value)
+    assert "does not look like a DuckDB UI ui.db" in message
+    assert "notebooks" in message
+    assert "Cannot open" not in message
+    assert "Catalog Error" not in message
+    assert "pg_tables" not in message
+
+
+def test_ut_r_031_missing_expected_column_reports_schema_drift(
+    tmp_path: Path,
+) -> None:
+    """UT-R-031: a table missing an expected column gives a clear schema error.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a schema-incompatible DuckDB file.
+
+    Returns
+    -------
+    None
+        The test asserts that a ``notebook_versions`` table missing the
+        expected ``expires`` column raises ``UiDbAccessError`` naming the
+        missing table/column, without the "Cannot open" framing.
+
+    Notes
+    -----
+    Traceability: GitHub issue #60.
+    """
+    ui_db_path = tmp_path / "ui.db"
+    with duckdb.connect(str(ui_db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE notebooks("
+            "id UUID NOT NULL PRIMARY KEY, name VARCHAR NOT NULL, "
+            "created TIMESTAMP NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE notebook_versions("
+            "notebook_id UUID NOT NULL, version INTEGER NOT NULL, "
+            "title VARCHAR NOT NULL, json VARCHAR NOT NULL, "
+            "created TIMESTAMP NOT NULL, "
+            "PRIMARY KEY (notebook_id, version))"
+        )
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        list_notebooks(ui_db_path)
+
+    message = str(error_info.value)
+    assert "does not look like a DuckDB UI ui.db" in message
+    assert "expires" in message or "notebook_versions" in message
+    assert "Cannot open" not in message
+
+
+def test_ut_r_032_fixture_ui_db_passes_schema_preflight(
+    synthetic_ui_db: Path,
+) -> None:
+    """UT-R-032: the synthetic fixture still passes the new schema preflight.
+
+    Parameters
+    ----------
+    synthetic_ui_db
+        Generated DuckDB UI database fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` still succeeds against the
+        existing synthetic fixture after the schema preflight is added,
+        guarding against a preflight that is too strict.
+
+    Notes
+    -----
+    Traceability: GitHub issue #60.
+    """
+    notebooks = list_notebooks(synthetic_ui_db)
+
+    assert notebooks
+
+
+def test_ut_r_033_enospc_during_copy_fails_immediately_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-033: ENOSPC during copy fails immediately, naming dest_dir.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used for the source database and copy
+        destination.
+    monkeypatch
+        Pytest monkeypatch fixture used to force ``shutil.copy2`` to raise.
+
+    Returns
+    -------
+    None
+        The test asserts that a deterministic ``OSError`` with
+        ``errno.ENOSPC`` raised by the copy step is not retried (no
+        ``time.sleep`` calls), and that the resulting ``UiDbAccessError``
+        names the real cause and the destination directory instead of
+        suggesting the UI may be running.
+
+    Notes
+    -----
+    Traceability: GitHub issue #64.
+    """
+    import errno
+
+    source = tmp_path / "ui.db"
+    _build_readable_duckdb(source)
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+
+    def _raise_enospc(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("duckdb_ui_notebook_export.reader.shutil.copy2", _raise_enospc)
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        copy_ui_db(source, destination, retries=3, retry_wait=0.01)
+
+    assert sleep_calls == []
+    message = str(error_info.value)
+    assert "No space left on device" in message
+    assert str(destination) in message
+    assert "UI may be running" not in message
+
+
+def test_ut_r_034_eacces_during_copy_fails_immediately_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-034: EACCES during copy fails immediately, naming dest_dir.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used for the source database and copy
+        destination.
+    monkeypatch
+        Pytest monkeypatch fixture used to force ``shutil.copy2`` to raise.
+
+    Returns
+    -------
+    None
+        The test asserts that a deterministic ``OSError`` with
+        ``errno.EACCES`` is not retried and produces a message naming the
+        real cause and destination directory.
+
+    Notes
+    -----
+    Traceability: GitHub issue #64.
+    """
+    import errno
+
+    source = tmp_path / "ui.db"
+    _build_readable_duckdb(source)
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+
+    def _raise_eacces(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("duckdb_ui_notebook_export.reader.shutil.copy2", _raise_eacces)
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with pytest.raises(UiDbAccessError) as error_info:
+        copy_ui_db(source, destination, retries=3, retry_wait=0.01)
+
+    assert sleep_calls == []
+    message = str(error_info.value)
+    assert "Permission denied" in message
+    assert str(destination) in message
+    assert "UI may be running" not in message
+
+
+def test_ut_r_035_generic_validation_failure_still_retries_with_ui_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-035: a generic (non-errno-classified) failure still retries.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used for the corrupt source database.
+    monkeypatch
+        Pytest monkeypatch fixture used to observe ``time.sleep`` calls.
+
+    Returns
+    -------
+    None
+        The test asserts that a corrupt-file validation failure (not an
+        ``OSError`` with a deterministic errno) still retries up to the
+        requested attempt count and raises the "UI may be running" hint
+        message, preserving pre-existing behavior for transient failures.
+
+    Notes
+    -----
+    Traceability: GitHub issue #64. This guards against over-classifying:
+    only ENOSPC/EACCES/EROFS/ENAMETOOLONG ``OSError``s should skip retries.
+    """
+    source = tmp_path / "ui.db"
+    source.write_bytes(b"not a duckdb database")
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    with pytest.raises(UiDbAccessError, match=r"UI.*running|require-ui-closed|retry"):
+        copy_ui_db(source, destination, retries=3, retry_wait=0.01)
+
+    assert len(sleep_calls) == 2

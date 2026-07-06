@@ -382,6 +382,44 @@ def _positive_int_arg(value: str) -> int:
     return parsed
 
 
+def _nb_version_arg(value: str) -> str:
+    """Parse and validate the ``--nb-version`` argument as an integer string.
+
+    Parameters
+    ----------
+    value
+        Raw command-line argument text.
+
+    Returns
+    -------
+    str
+        The validated version identifier, unchanged (``load_notebook``
+        expects a string and converts it internally).
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        Raised when ``value`` does not parse as an integer.
+
+    Notes
+    -----
+    ``--nb-version`` selects a ``notebook_versions.version`` row, which is
+    always an integer in DuckDB UI's stored schema. Previously a
+    non-integer value reached ``load_notebook``, which raised
+    ``UiDbAccessError`` and mapped to exit code 4 ("ui.db access failed"),
+    even though the problem was an invalid argument, not a ``ui.db``
+    problem. Rejecting it here instead produces a standard argparse usage
+    error (exit code 2), consistent with ``--max-rows`` and
+    ``--cell-timeout`` (see GitHub issue #48).
+    """
+    try:
+        int(value)
+    except ValueError as error:
+        message = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(message) from error
+    return value
+
+
 def _positive_float_arg(value: str) -> float:
     """Parse and validate an argparse float argument that must be positive.
 
@@ -464,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--nb-version",
+        type=_nb_version_arg,
         help="Notebook version identifier to export.",
     )
     parser.add_argument(
