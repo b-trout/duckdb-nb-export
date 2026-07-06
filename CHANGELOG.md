@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `notebook_name_sanitized_for_output` warning no longer fires for
+  every notebook name that merely contains a space. Only names that need
+  more than whitespace-to-underscore substitution (for example a path
+  separator like `/` or `\`, or a colon `:`) now emit the warning; a name
+  like `Untitled Notebook` silently becomes `Untitled_Notebook.html` as
+  before, without a spurious warning on every export
+  ([#47](https://github.com/b-trout/duckdb-nb-export/issues/47)).
 - Log output no longer emits ANSI color escape codes when stderr is not a
   terminal (for example when piped or redirected to a file), and the
   `NO_COLOR` environment variable (any value, including an empty string,

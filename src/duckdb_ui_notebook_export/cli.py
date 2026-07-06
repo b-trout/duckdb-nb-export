@@ -62,6 +62,7 @@ from duckdb_ui_notebook_export.renderer import ExportMetadata, render_html
 
 LOGGER = structlog.get_logger()
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[\s/\\:]+")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def sanitize_filename(name: str) -> str:
@@ -84,6 +85,40 @@ def sanitize_filename(name: str) -> str:
         This function does not raise package-specific exceptions.
     """
     return _UNSAFE_FILENAME_PATTERN.sub("_", name).strip("_")
+
+
+def _sanitized_beyond_whitespace(name: str, sanitized_name: str) -> bool:
+    """Return whether sanitization changed more than whitespace to underscores.
+
+    Parameters
+    ----------
+    name
+        Original notebook name.
+    sanitized_name
+        Result of ``sanitize_filename(name)``.
+
+    Returns
+    -------
+    bool
+        True when ``sanitized_name`` differs from a variant of ``name`` that
+        only replaces whitespace runs with underscores (and strips leading
+        and trailing underscores); False when the only change was
+        whitespace substitution.
+
+    Raises
+    ------
+    None
+        This function does not raise package-specific exceptions.
+
+    Notes
+    -----
+    Spaces in notebook names are common and expected to become underscores
+    in the output filename, so that alone should not warn. Path separators
+    (``/``, ``\\``) or colons being replaced indicates a more surprising
+    rename and should still warn.
+    """
+    whitespace_only_variant = _WHITESPACE_PATTERN.sub("_", name).strip("_")
+    return sanitized_name != whitespace_only_variant
 
 
 def dedupe_output_path(path: Path) -> Path:
@@ -151,7 +186,7 @@ def resolve_output_path(
 
     if output is None:
         sanitized_name = sanitize_filename(notebook_name)
-        if sanitized_name != notebook_name:
+        if _sanitized_beyond_whitespace(notebook_name, sanitized_name):
             _direct_stderr_logger().warning(
                 "notebook_name_sanitized_for_output",
                 original_name=notebook_name,

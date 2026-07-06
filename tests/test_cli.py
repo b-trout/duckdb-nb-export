@@ -212,6 +212,66 @@ def test_ut_c_008_sanitized_default_name_emits_warning(
     assert "Sales_Cost" in captured.err
 
 
+def test_ut_c_048_space_only_sanitized_name_does_not_warn(
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-048: A whitespace-only substitution does not emit a warning.
+
+    Notes
+    -----
+    Spaces in notebook names are normal and expected to become underscores
+    in the output filename; warning on every such name is noise. Only
+    sanitization beyond whitespace-to-underscore substitution (path
+    separators, colons) should warn.
+
+    Traceability
+    ------------
+    Issue #47
+    """
+    output = resolve_output_path(None, "Untitled Notebook", None)
+
+    captured = capsys.readouterr()
+    assert output == tmp_workdir / "Untitled_Notebook.html"
+    assert captured.err == ""
+
+
+def test_ut_c_049_path_separator_in_name_still_warns(
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-049: A path separator in the notebook name still warns.
+
+    Traceability
+    ------------
+    Issue #47
+    """
+    output = resolve_output_path(None, "a/b Notebook", None)
+
+    captured = capsys.readouterr()
+    assert output == tmp_workdir / "a_b_Notebook.html"
+    assert "notebook_name_sanitized_for_output" in captured.err
+    assert "a/b Notebook" in captured.err
+
+
+def test_ut_c_050_colon_in_name_still_warns(
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-050: A colon in the notebook name still warns.
+
+    Traceability
+    ------------
+    Issue #47
+    """
+    output = resolve_output_path(None, "a:b", None)
+
+    captured = capsys.readouterr()
+    assert output == tmp_workdir / "a_b.html"
+    assert "notebook_name_sanitized_for_output" in captured.err
+    assert "a:b" in captured.err
+
+
 def test_ut_c_009_output_dir_becomes_allowed_base(
     tmp_workdir: Path,
     tmp_path: Path,
