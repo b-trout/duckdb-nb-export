@@ -248,12 +248,20 @@ def test_ut_c_012_prompt_lists_all_cell_sql(
     assert "SELECT 2 AS second" in captured.out
 
 
-def test_ut_c_013_main_returns_ok_when_export_completes(
+def test_ut_c_013_main_returns_cell_error_when_a_cell_fails_by_default(
     synthetic_ui_db: Path,
     fresh_duckdb: Path,
     tmp_workdir: Path,
 ) -> None:
-    """UT-C-013: Returns exit code 0 when export completes."""
+    """UT-C-013: Returns exit code 2 by default when any cell result fails.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook includes a failing
+    ``SELECT * FROM missing_table`` cell. Since issue #33, the CLI exits
+    with ``ExitCode.CELL_ERROR`` by default whenever any cell result is not
+    ``CellStatus.OK``, without requiring ``--stop-on-error``.
+    """
     exit_code = main(
         [
             "Notebook",
@@ -267,7 +275,81 @@ def test_ut_c_013_main_returns_ok_when_export_completes(
         ]
     )
 
+    assert exit_code == ExitCode.CELL_ERROR
+
+
+def test_ut_c_033_no_fail_on_cell_error_restores_exit_zero(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-033: ``--no-fail-on-cell-error`` restores the previous exit 0.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook includes a plain ``ERROR``
+    cell. ``--no-fail-on-cell-error`` restores the pre-#33 behavior: exit 0
+    on completion despite the cell failure.
+
+    Traceability
+    ------------
+    Issue #33
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
     assert exit_code == ExitCode.OK
+
+
+def test_ut_c_034_no_fail_on_cell_error_still_fails_on_abandoned_report(
+    tmp_path: Path,
+) -> None:
+    """UT-C-034: ``--no-fail-on-cell-error`` still exits 2 when abandoned.
+
+    Notes
+    -----
+    ``report.abandoned`` and ``CellStatus.TIMEOUT`` results must still map
+    to ``ExitCode.CELL_ERROR`` even when ``--no-fail-on-cell-error`` is set;
+    only plain per-cell failures are forgiven by that flag.
+
+    Traceability
+    ------------
+    Issue #33
+    """
+    del tmp_path
+    report = ExecutionReport(
+        cell_results=[
+            CellResult(
+                status=CellStatus.OK,
+                columns=[],
+                rows=[],
+                truncated=False,
+                affected_rows=None,
+                error_message=None,
+            ),
+        ],
+        warnings=[],
+        used_memory_fallback=False,
+        abandoned=True,
+    )
+
+    assert (
+        _cell_error_exit_required(
+            report, stop_on_error=False, no_fail_on_cell_error=True
+        )
+        is True
+    )
 
 
 def test_ut_c_014_main_returns_notebook_not_found_for_missing_name(
@@ -458,11 +540,18 @@ def test_ut_c_030_read_only_flag_is_passed_to_executor(
     fresh_duckdb: Path,
     tmp_workdir: Path,
 ) -> None:
-    """UT-C-030: ``--read-only`` completes the export with exit code 0.
+    """UT-C-030: ``--read-only`` completes the export normally.
+
+    Notes
+    -----
+    The ``synthetic_ui_db`` fixture notebook includes a failing cell, so
+    since issue #33 the CLI exits with ``ExitCode.CELL_ERROR`` by default;
+    this test asserts the export still completes (rather than crashing)
+    under ``--read-only``.
 
     Traceability
     ------------
-    Issue #31
+    Issue #31, #33
     """
     exit_code = main(
         [
@@ -478,7 +567,7 @@ def test_ut_c_030_read_only_flag_is_passed_to_executor(
         ]
     )
 
-    assert exit_code == ExitCode.OK
+    assert exit_code == ExitCode.CELL_ERROR
 
 
 def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
@@ -491,11 +580,13 @@ def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
     Before the issue #32 fix, an error that aborted the transaction still
     hit a final ``COMMIT`` on an aborted transaction; here it is asserted
     end to end through the CLI: the export completes (writes an HTML file)
-    and the target database file shows no committed table afterward.
+    and the target database file shows no committed table afterward. Since
+    issue #33, the CLI exits with ``ExitCode.CELL_ERROR`` by default because
+    the notebook includes a failing cell.
 
     Traceability
     ------------
-    Issue #32
+    Issue #32, #33
     """
     from tests.helpers.synthetic_ui_db import build_ui_db
 
@@ -534,7 +625,7 @@ def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
         ]
     )
 
-    assert exit_code == ExitCode.OK
+    assert exit_code == ExitCode.CELL_ERROR
     assert (tmp_workdir / "out.html").exists()
 
     with duckdb.connect(str(target_db)) as connection:
@@ -580,7 +671,12 @@ def test_ut_c_027_abandoned_report_requires_cell_error_exit(tmp_path: Path) -> N
         abandoned=True,
     )
 
-    assert _cell_error_exit_required(report, stop_on_error=False) is True
+    assert (
+        _cell_error_exit_required(
+            report, stop_on_error=False, no_fail_on_cell_error=False
+        )
+        is True
+    )
 
 
 def test_ut_c_022_default_output_path_uses_notebook_name(

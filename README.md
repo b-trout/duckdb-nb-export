@@ -142,6 +142,7 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--max-rows` | Maximum rows to render per cell. | `1000` |
 | `--cell-timeout` | Per-cell execution timeout in seconds. | `300.0` |
 | `--stop-on-error` | Stop processing after the first cell error. | Off |
+| `--no-fail-on-cell-error` | Exit 0 even when individual cells fail (previous default). Timeouts and abandoned execution still exit 2. | Off |
 | `--allow-writes` | Commit notebook changes instead of rolling them back. Mutually exclusive with `--read-only`. | Off |
 | `--read-only` | Open the target database in DuckDB read-only mode for a stronger no-writes guarantee. Cells that create or modify tables fail. Mutually exclusive with `--allow-writes`; cannot be combined with a `:memory:` target. | Off |
 | `--no-external-access` | Disable DuckDB external access during execution. | Off |
@@ -166,16 +167,21 @@ duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
 | ---: | --- |
 | 0 | Success. |
 | 1 | Notebook not found, or notebook name is ambiguous (use `--notebook-id`). |
-| 2 | Cell execution stopped because `--stop-on-error` was set, or a timeout interrupt failed and the export ended partially. |
+| 2 | One or more cells failed, timed out, or were skipped, or `--stop-on-error` stopped processing after the first cell error, or a timeout interrupt failed and the export ended partially. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
 | 4 | `ui.db` access failed, including lock, corruption, or storage-version mismatch. |
 | 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
 | 6 | Notebook execution or HTML writing failed, including a missing or unusable `--db` target. |
 
-Without `--stop-on-error`, a run that completes exits 0 even if individual
-cells failed; per-cell failures are reported in the rendered HTML and on
-stderr, not through the exit code. Use `--stop-on-error` if you need failure
-detection through the exit code, for example in CI.
+By default, the exit code fails (exit 2) whenever any cell result is not a
+plain success (`ERROR`, `SKIPPED_ABORT`, `REJECTED_TRANSACTION_STATEMENT`,
+`TIMEOUT`), or execution was abandoned after an uninterruptible timeout;
+`--stop-on-error` additionally stops processing early after the first cell
+error. Pass `--no-fail-on-cell-error` to restore the previous (pre-0.0.3)
+behavior of exiting 0 whenever the run completes despite per-cell failures,
+which are still reported in the rendered HTML and on stderr; timeouts and
+abandoned execution still exit 2 even with this flag, since those indicate
+the export itself did not run to completion as requested.
 
 ### Limitations
 

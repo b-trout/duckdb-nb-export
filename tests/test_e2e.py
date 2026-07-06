@@ -151,6 +151,7 @@ def _run_cli_export(
     tmp_path: Path,
     notebook_name: str,
     *extra_args: str,
+    expected_exit_code: int = 0,
 ) -> Path:
     """Run the exporter CLI as a real Python subprocess.
 
@@ -164,6 +165,10 @@ def _run_cli_export(
         Notebook name to request from the CLI.
     *extra_args
         Additional command-line arguments to pass to the CLI.
+    expected_exit_code
+        Expected CLI process exit code. Defaults to 0 (success); scenarios
+        with cell failures pass ``ExitCode.CELL_ERROR`` (2), since the CLI
+        now exits non-zero whenever any cell result is not ``CellStatus.OK``.
 
     Returns
     -------
@@ -173,7 +178,7 @@ def _run_cli_export(
     Raises
     ------
     AssertionError
-        Raised if the CLI return code differs from the expected success code.
+        Raised if the CLI return code differs from ``expected_exit_code``.
 
     Notes
     -----
@@ -203,7 +208,7 @@ def _run_cli_export(
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == expected_exit_code, result.stderr
     return output_path
 
 
@@ -355,7 +360,8 @@ def test_e2e_002_non_abort_error_matches_golden_html(
 
     Notes
     -----
-    The expected CLI exit code is zero because non-abort errors are rendered
+    The expected CLI exit code is 2 because a non-OK cell result now fails
+    the exit code by default, even though non-abort errors are rendered
     while later cells continue.
     """
     synthetic_ui_db = _build_synthetic_ui_db(
@@ -370,7 +376,9 @@ def test_e2e_002_non_abort_error_matches_golden_html(
         ],
     )
 
-    output_path = _run_cli_export(synthetic_ui_db, tmp_path, "non-abort-error")
+    output_path = _run_cli_export(
+        synthetic_ui_db, tmp_path, "non-abort-error", expected_exit_code=2
+    )
     _assert_matches_golden(output_path, "e2e-002-non-abort-error.html")
 
 
@@ -397,7 +405,8 @@ def test_e2e_003_abort_error_skips_later_cells_and_matches_golden_html(
 
     Notes
     -----
-    The default CLI behavior still exits zero after rendering skipped cells.
+    The default CLI behavior renders skipped cells but now exits 2 because
+    a non-OK cell result fails the exit code by default.
     """
     synthetic_ui_db = _build_synthetic_ui_db(
         tmp_path,
@@ -415,7 +424,9 @@ def test_e2e_003_abort_error_skips_later_cells_and_matches_golden_html(
         ],
     )
 
-    output_path = _run_cli_export(synthetic_ui_db, tmp_path, "abort-error")
+    output_path = _run_cli_export(
+        synthetic_ui_db, tmp_path, "abort-error", expected_exit_code=2
+    )
     _assert_matches_golden(output_path, "e2e-003-abort-error.html")
 
 
@@ -616,8 +627,9 @@ def test_e2e_008_transaction_statement_cells_match_golden_html(
 
     Notes
     -----
-    BEGIN, COMMIT, and ROLLBACK cells are expected to render as rejected rather
-    than being executed.
+    BEGIN, COMMIT, and ROLLBACK cells are expected to render as rejected
+    rather than being executed, and the rejected cell status now fails the
+    exit code by default (exit 2).
     """
     synthetic_ui_db = _build_synthetic_ui_db(
         tmp_path,
@@ -631,5 +643,7 @@ def test_e2e_008_transaction_statement_cells_match_golden_html(
         ],
     )
 
-    output_path = _run_cli_export(synthetic_ui_db, tmp_path, "transaction-statements")
+    output_path = _run_cli_export(
+        synthetic_ui_db, tmp_path, "transaction-statements", expected_exit_code=2
+    )
     _assert_matches_golden(output_path, "e2e-008-transaction-statements.html")

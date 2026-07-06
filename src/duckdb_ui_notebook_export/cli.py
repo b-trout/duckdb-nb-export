@@ -290,7 +290,12 @@ def _utc_now_z() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _cell_error_exit_required(report: ExecutionReport, *, stop_on_error: bool) -> bool:
+def _cell_error_exit_required(
+    report: ExecutionReport,
+    *,
+    stop_on_error: bool,
+    no_fail_on_cell_error: bool,
+) -> bool:
     """Return whether execution results should map to cell-error exit code.
 
     Parameters
@@ -298,20 +303,34 @@ def _cell_error_exit_required(report: ExecutionReport, *, stop_on_error: bool) -
     report
         Notebook execution report.
     stop_on_error
-        Whether CLI execution requested early stop on cell failure.
+        Whether CLI execution requested early stop on cell failure. This no
+        longer changes the exit-code outcome (any non-OK cell result already
+        triggers ``ExitCode.CELL_ERROR`` by default); it is accepted for
+        backward-compatible call signatures and documentation purposes only.
+    no_fail_on_cell_error
+        Whether ``--no-fail-on-cell-error`` was passed, restoring the
+        pre-#33 behavior of exiting 0 despite plain cell failures.
 
     Returns
     -------
     bool
         True when the CLI should return ``ExitCode.CELL_ERROR``.
+
+    Notes
+    -----
+    Timeouts and abandoned execution always require ``ExitCode.CELL_ERROR``,
+    even with ``--no-fail-on-cell-error``. Without that flag, any cell
+    result that is not ``CellStatus.OK`` also requires ``ExitCode.CELL_ERROR``
+    by default (issue #33).
     """
+    del stop_on_error
     if report.abandoned:
         return True
     if any(result.status is CellStatus.TIMEOUT for result in report.cell_results):
         return True
-    if stop_on_error:
-        return any(result.status is not CellStatus.OK for result in report.cell_results)
-    return False
+    if no_fail_on_cell_error:
+        return False
+    return any(result.status is not CellStatus.OK for result in report.cell_results)
 
 
 def _write_html(path: Path, html: str) -> None:
@@ -420,6 +439,12 @@ def main(argv: list[str] | None = None) -> int:
         "--stop-on-error",
         action="store_true",
         help="Stop processing after the first cell error.",
+    )
+    parser.add_argument(
+        "--no-fail-on-cell-error",
+        action="store_true",
+        help="Exit 0 even when individual cells fail (previous default). "
+        "Timeouts and abandoned execution still exit 2.",
     )
     write_mode_group = parser.add_mutually_exclusive_group()
     write_mode_group.add_argument(
@@ -543,7 +568,11 @@ def main(argv: list[str] | None = None) -> int:
         html = render_html(notebook, report, metadata)
         final_output_path = dedupe_output_path(output_path)
         _write_html(final_output_path, html)
-        if _cell_error_exit_required(report, stop_on_error=args.stop_on_error):
+        if _cell_error_exit_required(
+            report,
+            stop_on_error=args.stop_on_error,
+            no_fail_on_cell_error=args.no_fail_on_cell_error,
+        ):
             return int(ExitCode.CELL_ERROR)
         return int(ExitCode.OK)
     except (StorageVersionMismatchError, UiDbAccessError) as error:

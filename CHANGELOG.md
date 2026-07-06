@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** The exit code now fails by default whenever any notebook
+  cell result is not a plain success. Previously, without
+  `--stop-on-error`, a run that completed exited 0 even if individual
+  cells returned `ERROR`, `SKIPPED_ABORT`, or
+  `REJECTED_TRANSACTION_STATEMENT` (only `TIMEOUT` and abandoned execution
+  already failed the exit code); this made it easy to miss cell failures
+  in automated pipelines that only check the process exit code. The CLI
+  now returns `ExitCode.CELL_ERROR` (2) whenever any cell result is not
+  `CellStatus.OK`, or `report.abandoned` is true, without requiring
+  `--stop-on-error`. Pass the new `--no-fail-on-cell-error` flag to
+  restore the previous behavior (exit 0 despite per-cell failures;
+  timeouts and abandoned execution still exit 2). This project is still
+  alpha (0.0.x); the change is called out here because it affects
+  CI/automation exit-code checks
+  ([#33](https://github.com/b-trout/duckdb-nb-export/issues/33)).
 - Execution-phase failures (notebook re-execution or HTML writing) now exit
   with a dedicated exit code 6 instead of exit code 4. Exit code 4 is now
   reserved strictly for `ui.db` access failures (lock, corruption, or
