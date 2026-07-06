@@ -97,6 +97,13 @@ fact. `--read-only` and `--allow-writes` are mutually exclusive, and
 because some analytics notebooks create intermediate tables that are expected
 to be rolled back at the end of the run.
 
+With `--allow-writes`, if a cell error or an unrecoverable timeout aborts the
+transaction, the exporter never partially commits: it skips the remaining
+cells, rolls back the whole transaction instead of committing it, and adds a
+warning to the rendered HTML explaining that nothing was committed. This
+avoids silently persisting only the writes made before (or, for a
+timeout-abort, only after) the point of failure.
+
 `ROLLBACK` cannot undo external side effects such as `COPY ... TO` file writes,
 writes to an attached database, remote writes, `INSTALL`, or `LOAD`. The CLI
 therefore asks for confirmation before execution; in non-interactive contexts,

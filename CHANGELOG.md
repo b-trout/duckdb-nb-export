@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--read-only` to open the target database in DuckDB read-only mode for a
+  stronger no-writes guarantee than the default rollback-based safety net.
+  Notebook cells that create or modify tables then fail outright instead
+  of being rolled back after the fact. Mutually exclusive with
+  `--allow-writes`; cannot be combined with a `:memory:` target. The
+  default execution mode is unchanged (rollback-based, not read-only)
+  because some analytics notebooks create intermediate tables that are
+  expected to be rolled back
+  ([#31](https://github.com/b-trout/duckdb-nb-export/issues/31)).
+
 ### Changed
 
 - Documented that chart cells cannot be detected in stored notebook data
@@ -33,6 +45,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scoped per statement using `duckdb.extract_statements`, and falls back
   to the previous whole-text masking if statement splitting itself fails
   ([#29](https://github.com/b-trout/duckdb-nb-export/issues/29)).
+- An uninterruptible timeout no longer touches the database connection
+  again from the main thread. Previously, after abandoning a cell whose
+  worker thread could not be interrupted, the exporter still issued a
+  final `COMMIT`/`ROLLBACK` and `close()` on that same connection, which
+  DuckDB serializes per connection, so the process could block forever
+  behind the stuck query instead of producing partial HTML and exiting
+  ([#28](https://github.com/b-trout/duckdb-nb-export/issues/28)).
+- A mistyped `--db` path no longer silently creates a new, empty DuckDB
+  database file. `execute_notebook` now rejects a plain local `--db` path
+  that does not already exist with a clear error (exit code 4) before
+  connecting, instead of producing an error-filled HTML export with exit
+  code 0. `:memory:` and URI-style connect strings (for example `md:...`,
+  `s3://...`) are unaffected
+  ([#30](https://github.com/b-trout/duckdb-nb-export/issues/30)).
+- `--allow-writes` no longer risks a silent partial commit after the
+  transaction is aborted mid-run. A timeout that aborts the transaction is
+  now treated as terminal instead of being rolled back and silently
+  restarted in a new transaction (which previously caused the final
+  `COMMIT` to persist only the writes made after the timeout); an error
+  that aborts the transaction now also skips the remaining cells and
+  rolls back instead of attempting a `COMMIT` on an aborted transaction
+  (which previously could abort the whole export with no HTML written at
+  all). Both cases now complete the export normally, roll back every
+  change, and add a prominent warning to the rendered HTML explaining
+  that nothing was committed
+  ([#32](https://github.com/b-trout/duckdb-nb-export/issues/32)).
 
 ## [0.0.2] - 2026-07-06
 

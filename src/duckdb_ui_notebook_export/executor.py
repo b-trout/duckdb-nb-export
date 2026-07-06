@@ -793,6 +793,7 @@ def execute_notebook(
     cell_results: list[CellResult] = []
     connection = duckdb.connect(db, read_only=read_only)
     abandoned = False
+    commit_impossible = False
     try:
         primary_database = _current_database_name(connection)
         if no_external_access:
@@ -865,6 +866,8 @@ def execute_notebook(
                         remaining_count,
                         "Skipped because the transaction is aborted.",
                     )
+                    if allow_writes:
+                        commit_impossible = True
                     break
                 continue
 
@@ -880,6 +883,20 @@ def execute_notebook(
             if result.status is CellStatus.TIMEOUT and _transaction_is_aborted(
                 connection,
             ):
+                if allow_writes:
+                    # Restarting the transaction here would let the final
+                    # COMMIT persist only the writes made after the
+                    # timeout, silently dropping everything before it. With
+                    # --allow-writes the abort is terminal instead: skip the
+                    # remaining cells and roll back everything at the end.
+                    _append_skipped_abort_results(
+                        cell_results,
+                        remaining_count,
+                        "Skipped because the transaction was aborted by a "
+                        "timeout and --allow-writes was set.",
+                    )
+                    commit_impossible = True
+                    break
                 _restart_transaction(connection)
                 _restore_default_database_if_invalid(
                     connection,
@@ -899,6 +916,17 @@ def execute_notebook(
                 "connection_left_open_after_abandoned_timeout",
                 warning=warning,
             )
+            if allow_writes:
+                writes_warning = (
+                    "Nothing was committed: execution was abandoned after an "
+                    "uninterruptible timeout before --allow-writes could "
+                    "commit any changes."
+                )
+                warnings.append(writes_warning)
+                LOGGER.warning(
+                    "no_commit_after_abandoned_timeout",
+                    warning=writes_warning,
+                )
             return ExecutionReport(
                 cell_results=cell_results,
                 warnings=warnings,
@@ -906,10 +934,21 @@ def execute_notebook(
                 abandoned=True,
             )
 
-        if allow_writes:
+        if allow_writes and not commit_impossible:
             connection.execute("COMMIT")
         else:
             connection.execute("ROLLBACK")
+            if allow_writes and commit_impossible:
+                writes_warning = (
+                    "No changes were committed: the transaction was aborted "
+                    "before completion, so all writes were rolled back "
+                    "despite --allow-writes."
+                )
+                warnings.append(writes_warning)
+                LOGGER.warning(
+                    "commit_skipped_after_aborted_transaction",
+                    warning=writes_warning,
+                )
     except Exception:
         try:
             connection.execute("ROLLBACK")

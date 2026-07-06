@@ -445,6 +445,75 @@ def test_ut_c_030_read_only_flag_is_passed_to_executor(
     assert exit_code == ExitCode.OK
 
 
+def test_ut_c_031_allow_writes_abort_completes_export_without_partial_commit(
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-031: ``--allow-writes`` never partial-commits after an abort.
+
+    Notes
+    -----
+    Before the issue #32 fix, an error that aborted the transaction still
+    hit a final ``COMMIT`` on an aborted transaction; here it is asserted
+    end to end through the CLI: the export completes (writes an HTML file)
+    and the target database file shows no committed table afterward.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    from tests.helpers.synthetic_ui_db import build_ui_db
+
+    try:
+        ui_db = build_ui_db(
+            [
+                _notebook_spec(
+                    "AbortWrites",
+                    _sql_cell("CREATE TABLE abort_source (id INTEGER PRIMARY KEY)"),
+                    _sql_cell("INSERT INTO abort_source VALUES (1)"),
+                    _sql_cell("INSERT INTO abort_source VALUES (1)"),
+                    _sql_cell("SELECT 2 AS skipped_after_abort"),
+                )
+            ],
+            tmp_workdir,
+        )
+    except NotImplementedError as error:
+        pytest.skip(str(error))
+
+    target_db = tmp_workdir / "target.duckdb"
+    import duckdb
+
+    duckdb.connect(str(target_db)).close()
+
+    exit_code = main(
+        [
+            "AbortWrites",
+            "--ui-db",
+            str(ui_db),
+            "--db",
+            str(target_db),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--allow-writes",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    assert (tmp_workdir / "out.html").exists()
+
+    with duckdb.connect(str(target_db)) as connection:
+        row = connection.execute(
+            """
+            SELECT count(*)
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+              AND table_name = 'abort_source'
+            """,
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
 def test_ut_c_027_abandoned_report_requires_cell_error_exit(tmp_path: Path) -> None:
     """UT-C-027: ``report.abandoned`` True maps to ``ExitCode.CELL_ERROR``.
 

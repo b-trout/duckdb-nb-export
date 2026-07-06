@@ -7,6 +7,7 @@ implementation exists. They use real DuckDB databases and construct Notebook
 models directly, so they do not depend on the blocked DuckDB UI JSON schema.
 """
 
+import contextlib
 from pathlib import Path
 
 import duckdb
@@ -16,6 +17,7 @@ from duckdb_ui_notebook_export.exceptions import TargetDatabaseError
 from duckdb_ui_notebook_export.executor import (
     CellResult,
     CellStatus,
+    _empty_result,
     _requires_existence_check,
     contains_transaction_statement,
     execute_notebook,
@@ -951,3 +953,255 @@ def test_ut_x_036_read_only_with_nonexistent_path_raises_target_database_error(
         execute_notebook(notebook, str(missing_db), read_only=True)
 
     assert not missing_db.exists()
+
+
+def test_ut_x_037_allow_writes_error_abort_never_partial_commits(
+    fresh_duckdb: Path,
+) -> None:
+    """UT-X-037: allow_writes never partial-commits after an error-abort.
+
+    Notes
+    -----
+    Before this fix, an error that aborted the transaction still hit a
+    final ``COMMIT`` attempt on an aborted transaction, which raises and
+    propagates out of ``execute_notebook`` with no HTML written at all.
+    Now the export completes normally: remaining cells are marked
+    ``SKIPPED_ABORT``, a prominent warning is recorded, and the final
+    transaction control is ``ROLLBACK`` instead of ``COMMIT`` so earlier
+    writes in the same transaction are not silently persisted either.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    notebook = make_notebook(
+        "CREATE TABLE allow_writes_abort(id INTEGER PRIMARY KEY);",
+        "INSERT INTO allow_writes_abort VALUES (1);",
+        "INSERT INTO allow_writes_abort VALUES (1);",
+        "SELECT 99 AS should_not_run;",
+    )
+
+    report = execute_notebook(notebook, str(fresh_duckdb), allow_writes=True)
+
+    assert [result.status for result in report.cell_results] == [
+        CellStatus.OK,
+        CellStatus.OK,
+        CellStatus.ERROR,
+        CellStatus.SKIPPED_ABORT,
+    ]
+    assert any(
+        "no changes were committed" in warning.lower() for warning in report.warnings
+    )
+    assert not table_exists(fresh_duckdb, "allow_writes_abort")
+
+
+def test_ut_x_038_allow_writes_timeout_abort_is_terminal_not_restarted(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-038: allow_writes treats a timeout-abort as terminal.
+
+    Notes
+    -----
+    Simulates a TIMEOUT result whose underlying transaction is actually
+    aborted (a real failing statement is executed through the fake to
+    leave the transaction in an aborted state, deterministically, with no
+    sleep-based timing). With ``allow_writes=True`` the executor must NOT
+    call ``_restart_transaction`` (which would silently commit only
+    post-timeout writes); it must instead skip all remaining cells and
+    finish with ``ROLLBACK``.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    original_run_cell_in_thread = executor_module._run_cell_in_thread
+    call_count = {"n": 0}
+
+    def fake_run_cell_in_thread(
+        connection: duckdb.DuckDBPyConnection,
+        sql: str,
+        max_rows: int,
+        cell_timeout: float,
+        interrupt_grace: float,
+    ) -> tuple[CellResult | None, BaseException | None, bool]:
+        call_count["n"] += 1
+        if call_count["n"] != 2:
+            return original_run_cell_in_thread(
+                connection,
+                sql,
+                max_rows,
+                cell_timeout,
+                interrupt_grace,
+            )
+        # Actually abort the transaction (a ConstraintException, unlike a
+        # CatalogException, leaves the transaction aborted), then report a
+        # TIMEOUT result, to deterministically reproduce "cell timed out and
+        # the transaction ended up aborted" without any real sleep-based
+        # timing.
+        with contextlib.suppress(duckdb.Error):
+            connection.execute(
+                "INSERT INTO allow_writes_timeout VALUES (1), (1)",
+            )
+        return (
+            _empty_result(
+                CellStatus.TIMEOUT,
+                "Cell execution exceeded the timeout and was interrupted.",
+            ),
+            None,
+            False,
+        )
+
+    monkeypatch.setattr(
+        executor_module,
+        "_run_cell_in_thread",
+        fake_run_cell_in_thread,
+    )
+
+    notebook = make_notebook(
+        "CREATE TABLE allow_writes_timeout(id INTEGER PRIMARY KEY);",
+        "SELECT 1 AS times_out;",
+        "SELECT 2 AS should_be_skipped;",
+    )
+
+    report = execute_notebook(notebook, str(fresh_duckdb), allow_writes=True)
+
+    assert [result.status for result in report.cell_results] == [
+        CellStatus.OK,
+        CellStatus.TIMEOUT,
+        CellStatus.SKIPPED_ABORT,
+    ]
+    assert "timeout" in (report.cell_results[2].error_message or "").lower()
+    assert any(
+        "no changes were committed" in warning.lower() for warning in report.warnings
+    )
+    assert not table_exists(fresh_duckdb, "allow_writes_timeout")
+
+
+def test_ut_x_039_allow_writes_false_timeout_abort_still_restarts(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-039: allow_writes=False keeps the restart-and-continue behavior.
+
+    Notes
+    -----
+    Guards that the issue #32 fix is scoped to ``allow_writes=True``: the
+    default (rollback) mode must keep restarting the transaction after a
+    timeout-abort so later cells still run, matching the pre-existing
+    UT-X-023 behavior.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    original_run_cell_in_thread = executor_module._run_cell_in_thread
+    call_count = {"n": 0}
+
+    def fake_run_cell_in_thread(
+        connection: duckdb.DuckDBPyConnection,
+        sql: str,
+        max_rows: int,
+        cell_timeout: float,
+        interrupt_grace: float,
+    ) -> tuple[CellResult | None, BaseException | None, bool]:
+        call_count["n"] += 1
+        if call_count["n"] != 2:
+            return original_run_cell_in_thread(
+                connection,
+                sql,
+                max_rows,
+                cell_timeout,
+                interrupt_grace,
+            )
+        with contextlib.suppress(duckdb.Error):
+            connection.execute(
+                "INSERT INTO default_mode_timeout VALUES (1), (1)",
+            )
+        return (
+            _empty_result(
+                CellStatus.TIMEOUT,
+                "Cell execution exceeded the timeout and was interrupted.",
+            ),
+            None,
+            False,
+        )
+
+    monkeypatch.setattr(
+        executor_module,
+        "_run_cell_in_thread",
+        fake_run_cell_in_thread,
+    )
+
+    notebook = make_notebook(
+        "CREATE TABLE default_mode_timeout(id INTEGER PRIMARY KEY);",
+        "SELECT 1 AS times_out;",
+        "SELECT 2 AS continues_after_restart;",
+    )
+
+    report = execute_notebook(notebook, str(fresh_duckdb))
+
+    assert [result.status for result in report.cell_results] == [
+        CellStatus.OK,
+        CellStatus.TIMEOUT,
+        CellStatus.OK,
+    ]
+    assert report.cell_results[2].rows == [(2,)]
+
+
+def test_ut_x_040_abandoned_with_allow_writes_warns_nothing_committed(
+    fresh_duckdb: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-X-040: an abandoned run with allow_writes warns nothing committed.
+
+    Notes
+    -----
+    The issue #28 abandoned path takes precedence and never touches the
+    connection; with ``allow_writes=True`` the report must still make
+    clear to the user that nothing was committed.
+
+    Traceability
+    ------------
+    Issue #32
+    """
+    import duckdb_ui_notebook_export.executor as executor_module
+
+    real_connection = duckdb.connect(str(fresh_duckdb))
+    monkeypatch.setattr(
+        executor_module.duckdb,
+        "connect",
+        lambda *a, **k: real_connection,
+    )
+
+    def fake_run_cell_in_thread(
+        connection: duckdb.DuckDBPyConnection,
+        sql: str,
+        max_rows: int,
+        cell_timeout: float,
+        interrupt_grace: float,
+    ) -> tuple[CellResult | None, BaseException | None, bool]:
+        del connection, sql, max_rows, cell_timeout, interrupt_grace
+        return None, None, True
+
+    monkeypatch.setattr(
+        executor_module,
+        "_run_cell_in_thread",
+        fake_run_cell_in_thread,
+    )
+
+    notebook = make_notebook("SELECT 1 AS value;")
+
+    report = execute_notebook(notebook, str(fresh_duckdb), allow_writes=True)
+
+    assert report.abandoned is True
+    assert any(
+        "nothing" in warning.lower() and "committed" in warning.lower()
+        for warning in report.warnings
+    )
+
+    real_connection.close()
