@@ -195,14 +195,16 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--no-external-access` | Disable DuckDB external access during execution. | Off |
 | `--require-ui-closed` | Open `ui.db` directly and require DuckDB UI to be closed. | Off |
 | `--yes` | Skip the execution confirmation prompt. | Off |
+| `--force` | Overwrite the output file if it exists, instead of writing to a numeric-suffixed sibling path. | Off |
 | `-q`, `--quiet` | Only show `ERROR`-level log events on stderr. Mutually exclusive with `-v`/`--verbose`. | Off |
 | `-v`, `--verbose` | Show `DEBUG`-level log events on stderr in addition to the default. Mutually exclusive with `-q`/`--quiet`. | Off |
 
-Existing output files are not overwritten; a numeric suffix is added. On
-success, the CLI prints the final output path (after any numeric-suffix
-deduplication) as a single line to stdout, so scripts can capture it
-directly; a renamed path also emits a warning naming the requested and
-actual paths on stderr.
+By default, existing output files are not overwritten; a numeric suffix is
+added. Pass `--force` to overwrite the requested path in place instead (no
+suffix, no dedupe warning). On success, the CLI prints the final output
+path (after any numeric-suffix deduplication) as a single line to stdout,
+so scripts can capture it directly; a renamed path also emits a warning
+naming the requested and actual paths on stderr.
 
 If `-o`/`--output` points outside the allowed base directory (the current
 directory by default, or the directory passed to `--output-dir`), the export

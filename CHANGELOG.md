@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--version` flag printing the tool version and the DuckDB version in
   use, then exiting 0
   ([#53](https://github.com/b-trout/duckdb-nb-export/issues/53)).
+- `--force` flag to overwrite the output file if it exists instead of
+  writing to a numeric-suffixed sibling path. The default
+  (dedupe-suffixing, never overwriting) is unchanged; with `--force` no
+  dedupe warning is emitted since the requested path is used as-is
+  ([#52](https://github.com/b-trout/duckdb-nb-export/issues/52)).
 - `-q`/`--quiet` and `-v`/`--verbose` flags to control log verbosity on
   stderr: `--quiet` raises the threshold to `ERROR` only, `--verbose`
   lowers it to `DEBUG`, and the default remains `INFO`. The two flags are

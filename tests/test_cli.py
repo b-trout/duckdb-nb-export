@@ -1990,3 +1990,80 @@ def test_ut_c_057_keyboard_interrupt_during_execution_exits_130(
     assert exit_code == ExitCode.INTERRUPTED
     assert "Traceback" not in captured.err
     assert "interrupted" in captured.err
+
+
+def test_ut_c_063_force_overwrites_existing_output_file(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-063: ``--force`` reuses the requested path and replaces content.
+
+    Traceability
+    ------------
+    Issue #52
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("old content", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--force",
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{output}\n"
+    assert "output_path_deduplicated" not in captured.err
+    assert not (tmp_workdir / "out-1.html").exists()
+    content = output.read_text(encoding="utf-8")
+    assert content != "old content"
+    assert "<html" in content.lower()
+
+
+def test_ut_c_064_without_force_suffix_behavior_unchanged(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-064: Without ``--force`` the numeric-suffix dedupe still applies.
+
+    Traceability
+    ------------
+    Issue #52
+    """
+    output = tmp_workdir / "out.html"
+    output.write_text("old content", encoding="utf-8")
+    deduped = tmp_workdir / "out-1.html"
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(output),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.OK
+    assert captured.out == f"{deduped}\n"
+    assert output.read_text(encoding="utf-8") == "old content"
+    assert deduped.exists()

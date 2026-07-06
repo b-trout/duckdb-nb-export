@@ -881,6 +881,12 @@ def _run(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the execution confirmation prompt.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the output file if it exists, instead of writing "
+        "to a numeric-suffixed sibling path.",
+    )
     verbosity_group = parser.add_mutually_exclusive_group()
     verbosity_group.add_argument(
         "-q",
@@ -1014,13 +1020,16 @@ def _run(argv: list[str] | None = None) -> int:
             ),
         )
         html = render_html(notebook, report, metadata)
-        final_output_path = dedupe_output_path(output_path)
-        if final_output_path != output_path:
-            _direct_stderr_logger().warning(
-                "output_path_deduplicated",
-                requested=str(output_path),
-                actual=str(final_output_path),
-            )
+        if args.force:
+            final_output_path = output_path
+        else:
+            final_output_path = dedupe_output_path(output_path)
+            if final_output_path != output_path:
+                _direct_stderr_logger().warning(
+                    "output_path_deduplicated",
+                    requested=str(output_path),
+                    actual=str(final_output_path),
+                )
         _write_html(final_output_path, html)
         sys.stdout.write(f"{final_output_path}\n")
         _report_cell_failures(report, final_output_path)
