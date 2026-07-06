@@ -25,6 +25,25 @@ def _coerce_version_number(version_id: str, index: int) -> int:
     return index
 
 
+def _slugify(name: str, notebook_id: str) -> str:
+    """Derive a deterministic internal-slug-shaped name for ``notebooks.name``.
+
+    Notes
+    -----
+    Real DuckDB UI notebooks store an internal slug in ``notebooks.name``
+    (for example ``notebook_OR_g9u20SBN9``), not the display name the user
+    sees. This was discovered by diffing a real-browser-derived ``ui.db``
+    fixture against this helper's previous assumption that ``notebooks.name``
+    was the display name (design doc 6.3#9 real-fixture finding). The exact
+    random suffix DuckDB UI generates is not reproducible here, so this
+    builds a deterministic, slug-shaped stand-in from ``notebook_id`` instead
+    -- good enough for tests that only need ``notebooks.name`` to be
+    slug-shaped and distinct from the display title.
+    """
+    digest = uuid.uuid5(_UUID_NAMESPACE, f"slug:{notebook_id}:{name}").hex[:10]
+    return f"notebook_{digest}"
+
+
 def _build_notebook_json(version: int, cells: list[dict]) -> str:
     serialized_cells = []
     for cell_id, cell in enumerate(cells, start=1):
@@ -88,8 +107,14 @@ def build_ui_db(notebooks, dest_dir):
     Non-UUID notebook identifiers are mapped to deterministic UUIDv5 values.
     Numeric version identifiers are stored as their integer value; non-numeric
     version identifiers are stored as one-based positions within the version
-    list. The original version identifier is preserved in
-    ``notebook_versions.title``.
+    list.
+
+    ``notebooks.name`` and ``notebook_versions.title`` follow real DuckDB UI
+    semantics (design doc 6.3#9 real-fixture finding): ``notebooks.name``
+    holds an internal slug distinct from what the caller passes as
+    ``"name"``, and every version's ``notebook_versions.title`` is set to the
+    caller-supplied ``"name"``, which is treated as the notebook's *display*
+    name (what a user sees and types in DuckDB UI), not the internal slug.
     """
     dest_path = Path(dest_dir)
     dest_path.mkdir(parents=True, exist_ok=True)
@@ -133,12 +158,14 @@ def build_ui_db(notebooks, dest_dir):
 
         for notebook in notebooks:
             notebook_id = _coerce_notebook_uuid(notebook["notebook_id"])
+            display_name = notebook["name"]
+            slug = _slugify(display_name, str(notebook_id))
             versions = notebook["versions"]
             created = notebook.get("updated_at") or versions[0]["created_at"]
 
             connection.execute(
                 "INSERT INTO notebooks(id, name, created) VALUES (?, ?, ?)",
-                [str(notebook_id), notebook["name"], created],
+                [str(notebook_id), slug, created],
             )
 
             last_version_index = len(versions)
@@ -164,7 +191,7 @@ def build_ui_db(notebooks, dest_dir):
                     [
                         str(notebook_id),
                         version,
-                        version_id,
+                        display_name,
                         _build_notebook_json(version, version_spec["cells"]),
                         version_spec["created_at"],
                         expires,

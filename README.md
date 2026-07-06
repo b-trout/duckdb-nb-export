@@ -66,6 +66,13 @@ The default reader path uses a snapshot copy of `ui.db` and its WAL file, so
 the command can read notebooks while DuckDB UI is still running. Use
 `--require-ui-closed` only when you want to open `ui.db` directly.
 
+Notebook name matching resolves against the display name shown in DuckDB UI
+(the current notebook title) first, and falls back to DuckDB UI's internal
+notebook name (the `notebook_...` slug stored in `notebooks.name`) only if
+no title matches. `--list` always shows the display name. If several
+notebooks share the same display name, pass `--notebook-id <id>` (from
+`--list`) to select one unambiguously.
+
 ### How it works
 
 The exporter copies `ui.db` together with its WAL, reads the notebook

@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definition an exporter could reproduce
   ([#6](https://github.com/b-trout/duckdb-nb-export/issues/6)).
 
+### Fixed
+
+- Notebook name resolution now matches the display name shown in DuckDB UI
+  (`notebook_versions.title`); previously the internal slug in
+  `notebooks.name` was used, so `--list` showed slugs and display-name
+  lookups failed
+  ([#8](https://github.com/b-trout/duckdb-nb-export/issues/8)).
+
 ## [0.0.1] - 2026-07-05
 
 Initial alpha release.

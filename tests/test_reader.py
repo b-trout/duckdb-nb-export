@@ -574,3 +574,292 @@ def test_ut_r_015_missing_ui_db_reports_clear_not_found_error(
     assert str(missing_ui_db) in message
     assert "not found" in message.lower()
     assert "running" not in message.lower()
+
+
+# Real-browser-derived fixture: tests/fixtures/ui_db/ui.db was regenerated
+# from an actual DuckDB UI browser session (scripts/regenerate_ui_db_fixtures.py
+# browser mode). Diffing it against the fallback build revealed that
+# notebooks.name holds an internal slug (e.g. "notebook_OR_g9u20SBN9"), while
+# the name shown to users in the UI lives in notebook_versions.title (e.g.
+# "Untitled Notebook", read from the latest version where expires IS NULL).
+# UT-R-016..019 pin the corrected resolution semantics against that fixture.
+_REAL_UI_DB_FIXTURE = Path(__file__).parent / "fixtures" / "ui_db" / "ui.db"
+_REAL_NOTEBOOK_A_ID = "902baeaf-241e-437e-9564-ec03c316b3f0"
+_REAL_NOTEBOOK_A_SLUG = "notebook_OR_g9u20SBN9"
+_REAL_NOTEBOOK_B_SLUG = "notebook_JKS7o1wU06Fs"
+_REAL_DISPLAY_TITLE = "Untitled Notebook"
+
+
+def _real_ui_db_fixture() -> Path:
+    """Return the real browser-derived ui.db fixture, skipping if absent.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to ``tests/fixtures/ui_db/ui.db``.
+    """
+    if not _REAL_UI_DB_FIXTURE.exists():
+        pytest.skip("real ui.db fixture not present")
+    return _REAL_UI_DB_FIXTURE
+
+
+def test_ut_r_016_list_notebooks_reports_display_title_not_slug() -> None:
+    """UT-R-016: list_notebooks reports the display title, not the slug.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` returns the notebook
+        display name (the latest version's ``title``) for both notebooks in
+        the real fixture, rather than the internal ``notebooks.name`` slug.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9 (real-browser-fixture
+    finding). Both notebooks in the real fixture happen to share the same
+    display title ("Untitled Notebook"), which is itself the same-name
+    collision case covered by UT-R-007/UT-R-014.
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    notebooks = list_notebooks(ui_db_path)
+
+    names = [notebook.name for notebook in notebooks]
+    assert names == [_REAL_DISPLAY_TITLE, _REAL_DISPLAY_TITLE]
+    assert _REAL_NOTEBOOK_A_SLUG not in names
+    assert _REAL_NOTEBOOK_B_SLUG not in names
+
+
+def test_ut_r_017_load_by_display_title_is_ambiguous_for_real_fixture() -> None:
+    """UT-R-017: loading by the shared display title raises ambiguity.
+
+    Returns
+    -------
+    None
+        The test asserts that resolving by the display title
+        ``"Untitled Notebook"`` raises ``AmbiguousNotebookError`` because
+        both real-fixture notebooks share that title, and that the error
+        points at ``--notebook-id``.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 7 section.
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    with pytest.raises(AmbiguousNotebookError) as error_info:
+        load_notebook(ui_db_path, _REAL_DISPLAY_TITLE)
+
+    message = str(error_info.value)
+    assert "--notebook-id" in message
+
+
+def test_ut_r_018_load_by_notebook_id_reads_latest_three_cell_version() -> None:
+    """UT-R-018: notebook_id resolves the real fixture's latest version.
+
+    Returns
+    -------
+    None
+        The test asserts that loading by ``notebook_id`` succeeds despite the
+        display-title collision, and that the latest version (``expires IS
+        NULL``) is returned with its three cells, including the empty
+        (``query IS NULL``) trailing cell.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9 (real-browser-fixture
+    finding), 7 section.
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    notebook = load_notebook(
+        ui_db_path,
+        _REAL_DISPLAY_TITLE,
+        notebook_id=_REAL_NOTEBOOK_A_ID,
+    )
+
+    assert notebook.name == _REAL_DISPLAY_TITLE
+    assert [cell.sql for cell in notebook.cells] == [
+        "select 1 as one, 2 as two;",
+        "select current_database() as db_name;",
+        "",
+    ]
+
+
+def test_ut_r_019_load_by_internal_slug_falls_back_when_title_ambiguous() -> None:
+    """UT-R-019: an internal slug still resolves via the fallback match.
+
+    Returns
+    -------
+    None
+        The test asserts that passing the internal ``notebooks.name`` slug
+        (as a user might if they copied it from an older tool version or
+        from the raw database) as the notebook name still resolves
+        unambiguously, because slug matching is only consulted when title
+        matching finds zero candidates.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9 (real-browser-fixture
+    finding).
+    """
+    ui_db_path = _real_ui_db_fixture()
+
+    notebook = load_notebook(ui_db_path, _REAL_NOTEBOOK_B_SLUG)
+
+    assert notebook.name == _REAL_DISPLAY_TITLE
+
+
+def _build_raw_ui_db(ui_db_path: Path) -> duckdb.DuckDBPyConnection:
+    """Create the four-table ``ui.db`` schema and return an open connection.
+
+    Parameters
+    ----------
+    ui_db_path
+        Destination database path.
+
+    Returns
+    -------
+    duckdb.DuckDBPyConnection
+        Open connection to the newly created database, ready for the
+        caller to insert ``notebooks`` and ``notebook_versions`` rows.
+
+    Notes
+    -----
+    Mirrors the real ``ui.db`` DDL from design doc section 6.3#9, without
+    the foreign-key constraints DuckDB UI itself does not declare.
+    """
+    connection = duckdb.connect(str(ui_db_path))
+    connection.execute(
+        "CREATE TABLE notebooks("
+        "id UUID NOT NULL PRIMARY KEY, name VARCHAR NOT NULL, "
+        "created TIMESTAMP NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE notebook_versions("
+        "notebook_id UUID NOT NULL, version INTEGER NOT NULL, "
+        "title VARCHAR NOT NULL, json VARCHAR NOT NULL, "
+        "created TIMESTAMP NOT NULL, expires TIMESTAMP, "
+        "PRIMARY KEY (notebook_id, version))"
+    )
+    connection.execute("CREATE TABLE current_notebook_id(id UUID NOT NULL)")
+    connection.execute("CREATE TABLE has_onboarded AS SELECT false AS has_onboarded")
+    return connection
+
+
+_MINIMAL_STORED_NOTEBOOK_JSON = (
+    '{"notebookSerializationFormat": 3, "cells": [], "viewMode": {}, "version": 1}'
+)
+
+
+def test_ut_r_020_duplicate_expires_null_rows_do_not_duplicate_or_ambiguate(
+    tmp_path: Path,
+) -> None:
+    """UT-R-020: duplicate ``expires IS NULL`` rows do not duplicate or ambiguate.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` returns exactly one entry
+        for a notebook with two ``expires IS NULL`` version rows, that
+        ``load_notebook`` resolves it without raising
+        ``AmbiguousNotebookError``, and that the reported ``updated_at`` is
+        deterministically the newest such row's ``created`` timestamp.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section, 6.3#9. Real DuckDB UI keeps
+    exactly one ``expires IS NULL`` row per notebook, but the default read
+    path snapshots a live database, so a defensive newest-row pick is
+    warranted should two such rows ever coexist transiently.
+    """
+    ui_db_path = tmp_path / "ui.db"
+    notebook_id = "11111111-1111-1111-1111-111111111111"
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [notebook_id, "notebook_dupnull0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [notebook_id, "Dup Null Title", _MINIMAL_STORED_NOTEBOOK_JSON],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 2, ?, ?, TIMESTAMP '2026-07-02 00:00:00', NULL)",
+            [notebook_id, "Dup Null Title", _MINIMAL_STORED_NOTEBOOK_JSON],
+        )
+    finally:
+        connection.close()
+
+    notebooks = list_notebooks(ui_db_path)
+
+    matching = [notebook for notebook in notebooks if notebook.name == "Dup Null Title"]
+    assert len(matching) == 1
+    assert matching[0].updated_at.isoformat().startswith("2026-07-02")
+
+    notebook = load_notebook(ui_db_path, "Dup Null Title")
+    assert notebook.name == "Dup Null Title"
+
+
+def test_ut_r_021_notebook_without_versions_is_excluded_not_crash(
+    tmp_path: Path,
+) -> None:
+    """UT-R-021: a notebook with zero version rows is excluded, not a crash.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a raw ``ui.db`` fixture.
+
+    Returns
+    -------
+    None
+        The test asserts that ``list_notebooks`` excludes a notebook that
+        has no ``notebook_versions`` rows at all, rather than raising a
+        ``pydantic.ValidationError`` from a null display name or timestamp,
+        and that a normal notebook alongside it still resolves correctly.
+
+    Notes
+    -----
+    Traceability: design doc 4.1 section. Restores the pre-existing
+    inner-join exclusion semantics for versionless notebooks.
+    """
+    ui_db_path = tmp_path / "ui.db"
+    real_notebook_id = "22222222-2222-2222-2222-222222222222"
+    versionless_notebook_id = "33333333-3333-3333-3333-333333333333"
+    connection = _build_raw_ui_db(ui_db_path)
+    try:
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [real_notebook_id, "notebook_real0001"],
+        )
+        connection.execute(
+            "INSERT INTO notebooks VALUES "
+            "(CAST(? AS UUID), ?, TIMESTAMP '2026-07-01 00:00:00')",
+            [versionless_notebook_id, "notebook_noversions01"],
+        )
+        connection.execute(
+            "INSERT INTO notebook_versions VALUES "
+            "(CAST(? AS UUID), 1, ?, ?, TIMESTAMP '2026-07-01 00:00:00', NULL)",
+            [real_notebook_id, "Real Title", _MINIMAL_STORED_NOTEBOOK_JSON],
+        )
+    finally:
+        connection.close()
+
+    notebooks = list_notebooks(ui_db_path)
+
+    assert len(notebooks) == 1
+    assert notebooks[0].name == "Real Title"
+
+    notebook = load_notebook(ui_db_path, "Real Title")
+    assert notebook.name == "Real Title"

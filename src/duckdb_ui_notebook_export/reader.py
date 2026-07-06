@@ -141,10 +141,19 @@ def _copy_once(ui_db_path: Path, copied_db_path: Path) -> None:
 
 
 def _build_notebook_info(row: tuple[Any, ...]) -> NotebookInfo:
-    """Build notebook metadata from a schema query row."""
-    name, notebook_id, updated_at = row
+    """Build notebook metadata from a schema query row.
+
+    Notes
+    -----
+    ``row`` carries the internal ``notebooks.name`` slug as a fourth column
+    in addition to the three ``NotebookInfo`` fields. ``NotebookInfo.name``
+    is always the *display* name (the latest version's ``title``); the slug
+    is only consulted as a resolution fallback in ``_resolve_notebook`` and
+    is not part of the public ``NotebookInfo`` contract.
+    """
+    display_name, notebook_id, updated_at, _slug = row
     return NotebookInfo(
-        name=str(name),
+        name=str(display_name),
         notebook_id=str(notebook_id),
         updated_at=updated_at,
     )
@@ -215,8 +224,11 @@ def _resolve_notebook(
     connection
         Open DuckDB connection to the UI database or its snapshot.
     name
-        Notebook name to resolve. Ignored when ``notebook_id`` is provided
-        and does not match, since ``notebook_id`` always takes priority.
+        Notebook name to resolve. Matched first against the display name
+        (the latest version's ``title``) and, only when that yields zero
+        candidates, against the internal ``notebooks.name`` slug. Ignored
+        when ``notebook_id`` is provided and does not match, since
+        ``notebook_id`` always takes priority.
     notebook_id
         Optional notebook identifier used to resolve unambiguously,
         bypassing name-based matching entirely.
@@ -233,8 +245,17 @@ def _resolve_notebook(
     duckdb_ui_notebook_export.exceptions.AmbiguousNotebookError
         Raised when the notebook name resolves to multiple notebooks and no
         ``notebook_id`` was given to disambiguate.
+
+    Notes
+    -----
+    The two-stage match (display title, then internal slug fallback) exists
+    because real DuckDB UI notebooks are named with an internal slug
+    (``notebooks.name``, e.g. ``notebook_OR_g9u20SBN9``) while the name a
+    user sees and would type is the display title (``notebook_versions.title``
+    of the latest version). See design doc 6.3#9 (real-fixture finding).
     """
-    all_notebooks = _list_notebooks(connection)
+    all_with_slugs = _list_notebooks_with_slugs(connection)
+    all_notebooks = [notebook for notebook, _slug in all_with_slugs]
     if notebook_id is not None:
         for notebook in all_notebooks:
             if notebook.notebook_id == notebook_id:
@@ -242,7 +263,11 @@ def _resolve_notebook(
         available_ids = sorted({notebook.notebook_id for notebook in all_notebooks})
         _raise_not_found_by_id(notebook_id, available_ids)
 
-    candidates = [notebook for notebook in all_notebooks if notebook.name == name]
+    candidates = [
+        notebook for notebook, _slug in all_with_slugs if notebook.name == name
+    ]
+    if not candidates:
+        candidates = [notebook for notebook, slug in all_with_slugs if slug == name]
     if not candidates:
         available_names = sorted({notebook.name for notebook in all_notebooks})
         _raise_not_found(name, available_names)
@@ -251,21 +276,64 @@ def _resolve_notebook(
     return candidates[0]
 
 
-def _list_notebooks(connection: duckdb.DuckDBPyConnection) -> list[NotebookInfo]:
-    """List notebook metadata using an open DuckDB connection."""
+def _list_notebooks_with_slugs(
+    connection: duckdb.DuckDBPyConnection,
+) -> list[tuple[NotebookInfo, str]]:
+    """List notebooks paired with their internal ``notebooks.name`` slug.
+
+    Notes
+    -----
+    The display name shown by DuckDB UI lives in ``notebook_versions.title``
+    of the latest version (``expires IS NULL``), not in ``notebooks.name``,
+    which is an internal slug (for example ``notebook_OR_g9u20SBN9``). This
+    was discovered by diffing a real-browser-derived ``ui.db`` fixture
+    against the previous synthetic-fixture assumption that ``notebooks.name``
+    was the display name (design doc 6.3#9 real-fixture finding).
+
+    A notebook with no version where ``expires IS NULL`` (for example, a
+    transient synthetic fixture that only sets ``expires`` on non-final
+    versions) falls back to the most recently created version's title so
+    resolution still degrades gracefully instead of failing outright.
+
+    A notebook with no ``notebook_versions`` rows at all is excluded from
+    the result, matching the pre-existing inner-join behavior, since there
+    is no title or timestamp to report. Should more than one ``expires IS
+    NULL`` row ever coexist for a notebook (for example when the default
+    read path snapshots a live database mid-write), a defensive
+    ``DISTINCT ON`` pick of the newest such row (by ``created`` then
+    ``version`` descending) guarantees ``list_notebooks`` and name
+    resolution never see duplicate rows for the same notebook.
+    """
     cursor = connection.execute(
         """
         SELECT
-          n.name,
+          coalesce(latest.title, fallback.title) AS display_name,
           CAST(n.id AS VARCHAR) AS notebook_id,
-          max(v.created) AS updated_at
+          coalesce(latest.created, fallback.created) AS updated_at,
+          n.name AS slug
         FROM notebooks AS n
-        JOIN notebook_versions AS v ON v.notebook_id = n.id
-        GROUP BY n.name, n.id
-        ORDER BY updated_at DESC, n.name, notebook_id
+        JOIN (
+          SELECT DISTINCT ON (notebook_id) notebook_id, title, created
+          FROM notebook_versions
+          ORDER BY notebook_id, created DESC, version DESC
+        ) AS fallback
+          ON fallback.notebook_id = n.id
+        LEFT JOIN (
+          SELECT DISTINCT ON (notebook_id) notebook_id, title, created
+          FROM notebook_versions
+          WHERE expires IS NULL
+          ORDER BY notebook_id, created DESC, version DESC
+        ) AS latest
+          ON latest.notebook_id = n.id
+        ORDER BY updated_at DESC, display_name, notebook_id
         """
     )
-    return [_build_notebook_info(row) for row in _iter_rows(cursor)]
+    return [(_build_notebook_info(row), str(row[3])) for row in _iter_rows(cursor)]
+
+
+def _list_notebooks(connection: duckdb.DuckDBPyConnection) -> list[NotebookInfo]:
+    """List notebook metadata using an open DuckDB connection."""
+    return [notebook for notebook, _slug in _list_notebooks_with_slugs(connection)]
 
 
 def _database_info(stored_notebook: StoredNotebook) -> dict[str, Any] | None:
