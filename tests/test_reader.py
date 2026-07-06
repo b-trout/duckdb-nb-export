@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,10 +18,12 @@ from duckdb_ui_notebook_export.exceptions import (
 )
 from duckdb_ui_notebook_export.models import Cell, Notebook
 from duckdb_ui_notebook_export.reader import (
+    _cleanup_stale_snapshots,
     copy_ui_db,
     list_notebooks,
     list_versions,
     load_notebook,
+    open_ui_db,
 )
 
 
@@ -871,3 +874,118 @@ def test_ut_r_021_notebook_without_versions_is_excluded_not_crash(
 
     notebook = load_notebook(ui_db_path, "Real Title")
     assert notebook.name == "Real Title"
+
+
+def test_ut_r_022_cleanup_stale_snapshots_removes_only_old_snapshot_dirs(
+    tmp_path: Path,
+) -> None:
+    """UT-R-022: _cleanup_stale_snapshots removes only stale snapshot dirs.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used as a fake system temp root.
+
+    Returns
+    -------
+    None
+        The test asserts that a stale snapshot directory is removed while a
+        fresh snapshot directory, an unrelated directory, and a stale-named
+        regular file are all left untouched.
+
+    Notes
+    -----
+    Traceability: GitHub issue #38 (stale ui.db snapshot directories
+    accumulate after crashes).
+    """
+    stale_dir = tmp_path / "duckdb-ui-notebook-export-stale"
+    stale_dir.mkdir()
+    (stale_dir / "ui.db").write_text("stale")
+    old_timestamp = time.time() - (25 * 60 * 60)
+    os.utime(stale_dir, (old_timestamp, old_timestamp))
+
+    fresh_dir = tmp_path / "duckdb-ui-notebook-export-fresh"
+    fresh_dir.mkdir()
+
+    unrelated_dir = tmp_path / "something-else"
+    unrelated_dir.mkdir()
+
+    stale_named_file = tmp_path / "duckdb-ui-notebook-export-notadir"
+    stale_named_file.write_text("not a directory")
+    os.utime(stale_named_file, (old_timestamp, old_timestamp))
+
+    _cleanup_stale_snapshots(temp_root=tmp_path)
+
+    assert not stale_dir.exists()
+    assert fresh_dir.exists()
+    assert unrelated_dir.exists()
+    assert stale_named_file.exists()
+
+
+def test_ut_r_023_open_ui_db_triggers_cleanup_only_for_snapshot_path(
+    synthetic_ui_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-R-023: open_ui_db calls the cleanup only on the snapshot path.
+
+    Parameters
+    ----------
+    synthetic_ui_db
+        Generated DuckDB UI database fixture.
+    monkeypatch
+        Pytest monkeypatch fixture used to replace the cleanup helper.
+
+    Returns
+    -------
+    None
+        The test asserts that ``_cleanup_stale_snapshots`` is called exactly
+        once when ``require_ui_closed`` is false (the default), and is not
+        called at all when ``require_ui_closed=True``.
+
+    Notes
+    -----
+    Traceability: GitHub issue #38 (stale ui.db snapshot directories
+    accumulate after crashes).
+    """
+    calls: list[None] = []
+    monkeypatch.setattr(
+        "duckdb_ui_notebook_export.reader._cleanup_stale_snapshots",
+        lambda **kwargs: calls.append(None),
+    )
+
+    connection = open_ui_db(synthetic_ui_db)
+    connection.close()
+
+    assert len(calls) == 1
+
+    connection = open_ui_db(synthetic_ui_db, require_ui_closed=True)
+    connection.close()
+
+    assert len(calls) == 1
+
+
+def test_ut_r_024_cleanup_stale_snapshots_nonexistent_root_does_not_raise(
+    tmp_path: Path,
+) -> None:
+    """UT-R-024: _cleanup_stale_snapshots tolerates a missing temp root.
+
+    Parameters
+    ----------
+    tmp_path
+        Temporary directory used to build a non-existing temp root path.
+
+    Returns
+    -------
+    None
+        The test asserts that calling ``_cleanup_stale_snapshots`` against a
+        temp root that does not exist on disk does not raise.
+
+    Notes
+    -----
+    Traceability: GitHub issue #38 (stale ui.db snapshot directories
+    accumulate after crashes). The cleanup is best-effort and must never
+    surface an ``OSError`` to callers of ``open_ui_db``.
+    """
+    missing_root = tmp_path / "does-not-exist"
+
+    _cleanup_stale_snapshots(temp_root=missing_root)

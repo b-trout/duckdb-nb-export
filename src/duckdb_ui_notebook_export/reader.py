@@ -34,6 +34,7 @@ DEFAULT_UI_DB_PATH: Path = Path.home() / ".duckdb" / "extension_data" / "ui" / "
 _FETCH_CHUNK_SIZE = 1000
 _LOGGER = structlog.get_logger()
 _SYNTHETIC_UUID_NAMESPACE = uuid.UUID("d1ffdc0d-0000-4000-8000-000000000001")
+_STALE_SNAPSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 def _wal_path(ui_db_path: Path) -> Path:
@@ -456,6 +457,70 @@ def copy_ui_db(
     )
 
 
+def _cleanup_stale_snapshots(temp_root: Path | None = None) -> None:
+    """Remove leftover ``ui.db`` snapshot directories from crashed runs.
+
+    Parameters
+    ----------
+    temp_root
+        Directory to scan for snapshot directories. Defaults to the
+        system temporary directory.
+
+    Returns
+    -------
+    None
+        Stale snapshot directories are removed as a side effect.
+
+    Notes
+    -----
+    ``open_ui_db``'s snapshot path normally relies on ``weakref.finalize``
+    to remove its ``tempfile.mkdtemp`` snapshot directory once the
+    connection is garbage-collected. On a crash or SIGKILL, that finalizer
+    never runs, so the directory (a full copy of ``ui.db``, potentially
+    large) is left behind; repeated crashes can fill the temp filesystem
+    (see GitHub issue #38).
+
+    A directory is only removed once it is older than
+    ``_STALE_SNAPSHOT_MAX_AGE_SECONDS`` (24 hours). This guards against
+    deleting the live snapshot of a concurrently running export: a
+    snapshot directory younger than the age threshold might still be in
+    active use by another process, while anything older is safe to assume
+    abandoned.
+
+    This function is entirely best-effort: any ``OSError`` raised while
+    scanning or stat-ing entries is swallowed (and logged) rather than
+    propagated, since cleanup must never prevent ``open_ui_db`` from
+    proceeding.
+    """
+    if temp_root is None:
+        temp_root = Path(tempfile.gettempdir())
+
+    try:
+        candidates = list(temp_root.glob("duckdb-ui-notebook-export-*"))
+    except OSError as error:
+        _LOGGER.debug(
+            "stale_snapshot_scan_failed", path=str(temp_root), error=str(error)
+        )
+        return
+
+    now = time.time()
+    for candidate in candidates:
+        try:
+            if not candidate.is_dir():
+                continue
+            age_seconds = now - candidate.stat().st_mtime
+            if age_seconds < _STALE_SNAPSHOT_MAX_AGE_SECONDS:
+                continue
+            shutil.rmtree(candidate, ignore_errors=True)
+            _LOGGER.info("stale_snapshot_removed", path=str(candidate))
+        except OSError as error:
+            _LOGGER.debug(
+                "stale_snapshot_cleanup_failed",
+                path=str(candidate),
+                error=str(error),
+            )
+
+
 def open_ui_db(
     ui_db_path: Path,
     *,
@@ -486,11 +551,20 @@ def open_ui_db(
     Notes
     -----
     The default path uses the snapshot-copy strategy to tolerate a running UI.
+    Before creating a new snapshot, it also opportunistically cleans up
+    snapshot directories left behind by crashed prior runs (see
+    ``_cleanup_stale_snapshots``). Only directories older than
+    ``_STALE_SNAPSHOT_MAX_AGE_SECONDS`` (24 hours) are removed, so a
+    concurrently running export's live snapshot is never deleted out from
+    under it. This cleanup only runs on the snapshot path; when
+    ``require_ui_closed`` is true, no snapshot directory is created and
+    there is nothing to clean up.
     """
     if require_ui_closed:
         _require_ui_db_exists(ui_db_path)
         return _connect_read_only(ui_db_path)
 
+    _cleanup_stale_snapshots()
     snapshot_dir = Path(tempfile.mkdtemp(prefix="duckdb-ui-notebook-export-"))
     try:
         copied_db_path = copy_ui_db(ui_db_path, snapshot_dir)
