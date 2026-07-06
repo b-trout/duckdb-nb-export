@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stale `ui.db` snapshot directories left behind by a crashed or killed
+  process no longer accumulate indefinitely: each snapshot-path call to
+  `open_ui_db` now opportunistically removes snapshot directories older
+  than 24 hours before creating a new one
+  ([#38](https://github.com/b-trout/duckdb-nb-export/issues/38)).
+
 ## [0.0.2] - 2026-07-06
 
 ### Added
