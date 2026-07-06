@@ -139,8 +139,9 @@ The command is registered by `[project.scripts]` as `duckdb-nb-export`.
 | `--nb-version` | Notebook version identifier to export. | Latest version |
 | `--list` | List notebooks and exit. | Off |
 | `--list-versions` | List versions for the selected notebook and exit. | Off |
-| `--max-rows` | Maximum rows to render per cell. | `1000` |
-| `--cell-timeout` | Per-cell execution timeout in seconds. | `300.0` |
+| `--max-rows` | Maximum rows to render per cell. Must be a positive integer (>= 1). | `1000` |
+| `--cell-timeout` | Per-cell execution timeout in seconds. Must be a positive, finite number. | `300.0` |
+| `--interrupt-grace` | Seconds to wait after a timeout interrupt before abandoning execution. Must be a positive, finite number. | `30.0` |
 | `--stop-on-error` | Stop processing after the first cell error. | Off |
 | `--no-fail-on-cell-error` | Exit 0 even when individual cells fail (previous default). Timeouts and abandoned execution still exit 2. | Off |
 | `--allow-writes` | Commit notebook changes instead of rolling them back. Mutually exclusive with `--read-only`. | Off |

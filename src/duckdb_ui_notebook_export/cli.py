@@ -22,6 +22,7 @@ and orchestration across the reader, executor, and renderer layers.
 """
 
 import argparse
+import math
 import re
 import sys
 from collections.abc import Iterable
@@ -352,6 +353,64 @@ def _write_html(path: Path, html: str) -> None:
     path.write_text(html, encoding="utf-8")
 
 
+def _positive_int_arg(value: str) -> int:
+    """Parse and validate an argparse integer argument that must be positive.
+
+    Parameters
+    ----------
+    value
+        Raw command-line argument text.
+
+    Returns
+    -------
+    int
+        Parsed integer value.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        Raised when ``value`` is not an integer, or is less than 1.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        message = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(message) from error
+    if parsed < 1:
+        message = f"must be a positive integer (>= 1), got {value!r}"
+        raise argparse.ArgumentTypeError(message)
+    return parsed
+
+
+def _positive_float_arg(value: str) -> float:
+    """Parse and validate an argparse float argument that must be positive.
+
+    Parameters
+    ----------
+    value
+        Raw command-line argument text.
+
+    Returns
+    -------
+    float
+        Parsed float value.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        Raised when ``value`` is not a finite float, or is not greater than 0.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        message = f"invalid float value: {value!r}"
+        raise argparse.ArgumentTypeError(message) from error
+    if not math.isfinite(parsed) or parsed <= 0:
+        message = f"must be a positive, finite number, got {value!r}"
+        raise argparse.ArgumentTypeError(message)
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the ``duckdb-nb-export`` command-line interface.
 
@@ -425,15 +484,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--max-rows",
-        type=int,
+        type=_positive_int_arg,
         default=1000,
         help="Maximum rows to render per cell (default: %(default)s).",
     )
     parser.add_argument(
         "--cell-timeout",
-        type=float,
+        type=_positive_float_arg,
         default=300.0,
         help="Per-cell execution timeout in seconds (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--interrupt-grace",
+        type=_positive_float_arg,
+        default=30.0,
+        help="Seconds to wait after a timeout interrupt before abandoning "
+        "execution (default: %(default)s).",
     )
     parser.add_argument(
         "--stop-on-error",
@@ -555,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
             read_only=args.read_only,
             max_rows=args.max_rows,
             cell_timeout=args.cell_timeout,
+            interrupt_grace=args.interrupt_grace,
             stop_on_error=args.stop_on_error,
             no_external_access=args.no_external_access,
         )

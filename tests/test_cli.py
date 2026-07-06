@@ -870,3 +870,145 @@ def test_ut_c_023_main_notebook_id_exports_duplicate_name_without_positional(
 
     assert exit_code == ExitCode.OK
     assert (tmp_workdir / "out.html").exists()
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_ut_c_035_max_rows_rejects_non_positive_values(
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-035: ``--max-rows`` rejects zero and negative values.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--max-rows", value, "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--max-rows" in captured.err
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_ut_c_036_cell_timeout_rejects_non_positive_values(
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-036: ``--cell-timeout`` rejects zero and negative values.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--cell-timeout", value, "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--cell-timeout" in captured.err
+
+
+def test_ut_c_037_interrupt_grace_rejects_non_positive_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """UT-C-037: ``--interrupt-grace`` rejects zero (and non-positive values).
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["Notebook", "--interrupt-grace", "0", "--yes"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--interrupt-grace" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--max-rows", "1"),
+        ("--max-rows", "500"),
+        ("--cell-timeout", "0.1"),
+        ("--cell-timeout", "300"),
+        ("--interrupt-grace", "0.1"),
+        ("--interrupt-grace", "30"),
+    ],
+)
+def test_ut_c_038_numeric_validators_accept_valid_values(
+    flag: str,
+    value: str,
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-038: Valid ``--max-rows``/``--cell-timeout``/``--interrupt-grace``
+    values are accepted and the export still completes.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            flag,
+            value,
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+
+
+def test_ut_c_039_interrupt_grace_reaches_execute_notebook(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-039: ``--interrupt-grace`` is forwarded to ``execute_notebook``.
+
+    Traceability
+    ------------
+    Issue #37
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    captured_kwargs: dict[str, object] = {}
+    original_execute_notebook = cli_module.execute_notebook
+
+    def _capture_execute_notebook(notebook, db, **kwargs):
+        captured_kwargs.update(kwargs)
+        return original_execute_notebook(notebook, db, **kwargs)
+
+    monkeypatch.setattr(cli_module, "execute_notebook", _capture_execute_notebook)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--interrupt-grace",
+            "12.5",
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    assert captured_kwargs["interrupt_grace"] == 12.5

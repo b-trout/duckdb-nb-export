@@ -18,9 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because some analytics notebooks create intermediate tables that are
   expected to be rolled back
   ([#31](https://github.com/b-trout/duckdb-nb-export/issues/31)).
+- `--interrupt-grace` exposes the seconds to wait after a timeout interrupt
+  before abandoning execution, previously only reachable programmatically
+  through `execute_notebook`'s `interrupt_grace` parameter (default: `30.0`,
+  unchanged)
+  ([#37](https://github.com/b-trout/duckdb-nb-export/issues/37)).
 
 ### Changed
 
+- `--max-rows` and `--cell-timeout` now reject non-positive values
+  (`--max-rows` must be an integer >= 1; `--cell-timeout` and
+  `--interrupt-grace` must be positive, finite numbers) with a clear
+  argparse error instead of silently accepting values such as `0` or a
+  negative number that would otherwise produce confusing downstream
+  behavior
+  ([#37](https://github.com/b-trout/duckdb-nb-export/issues/37)).
 - **Breaking:** The exit code now fails by default whenever any notebook
   cell result is not a plain success. Previously, without
   `--stop-on-error`, a run that completed exited 0 even if individual
