@@ -23,9 +23,11 @@ process boundaries where required by the integration test design.
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -678,3 +680,98 @@ def test_it_010_require_ui_closed_fails_when_rw_process_holds_ui_db(
 
     assert result.returncode == 4
     assert "ui.db" in result.stderr.lower()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="SIGINT semantics for child processes differ on Windows",
+)
+def test_it_011_sigint_during_execution_does_not_abort_the_process(
+    tmp_path: Path,
+) -> None:
+    """IT-011: SIGINT during a running cell exits cleanly, no SIGABRT.
+
+    Notes
+    -----
+    Before issue #57 was fixed, a Ctrl-C landing while a cell's worker
+    thread was running left ``KeyboardInterrupt`` uncaught by
+    ``execute_notebook``'s cleanup, so the connection was never rolled back
+    or closed; DuckDB's native destructor could then abort the process at
+    interpreter teardown ("terminate called without an active exception",
+    SIGABRT). Reproducing the abort itself is timing- and platform-
+    dependent (this environment does not reliably trigger it even on the
+    pre-fix code), so the primary, non-flaky assertion is on the
+    ``execution_interrupted`` structlog line emitted by the fixed cleanup
+    path, in addition to defensively asserting the process was not killed
+    by SIGABRT.
+
+    Traceability
+    ------------
+    Issue #57
+    """
+    from tests.helpers.synthetic_ui_db import build_ui_db
+
+    try:
+        synthetic_ui_db = build_ui_db(
+            [
+                {
+                    "name": "sigint-notebook",
+                    "notebook_id": "nb-sigint",
+                    "versions": [
+                        {
+                            "version_id": "nb-sigint-v1",
+                            "created_at": "2026-07-05T00:00:00Z",
+                            "cells": [
+                                {
+                                    "cell_type": "sql",
+                                    "sql": (
+                                        "SELECT sum(i * j) FROM "
+                                        "range(100000000) AS lhs(i) CROSS JOIN "
+                                        "range(100000000) AS rhs(j)"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            tmp_path,
+        )
+    except NotImplementedError as error:
+        pytest.skip(str(error))
+
+    process = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable,
+            "-m",
+            "duckdb_ui_notebook_export.cli",
+            "sigint-notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--cell-timeout",
+            "300",
+            "--output",
+            str(tmp_path / "sigint.html"),
+            "--output-dir",
+            str(tmp_path),
+            "--yes",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    # Give the child time to start executing the long-running cell before
+    # interrupting it.
+    time.sleep(1.0)
+    process.send_signal(signal.SIGINT)
+
+    try:
+        _, stderr = process.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        pytest.fail("process did not exit within 30s after SIGINT")
+
+    assert process.returncode != -signal.SIGABRT, stderr
+    assert "execution_interrupted" in stderr, stderr

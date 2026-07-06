@@ -652,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return int(ExitCode.CONFIRMATION_DECLINED)
 
-        target_db, _used_memory_fallback = resolve_target_db(notebook, args.db)
+        target_db, used_memory_fallback = resolve_target_db(notebook, args.db)
         report = execute_notebook(
             notebook,
             target_db,
@@ -663,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
             interrupt_grace=args.interrupt_grace,
             stop_on_error=args.stop_on_error,
             no_external_access=args.no_external_access,
+            used_memory_fallback=used_memory_fallback,
         )
         metadata = ExportMetadata(
             exported_at_utc=_utc_now_z(),

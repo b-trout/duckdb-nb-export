@@ -312,6 +312,45 @@ def test_ut_c_033_no_fail_on_cell_error_restores_exit_zero(
     assert exit_code == ExitCode.OK
 
 
+def test_ut_c_046_explicit_memory_db_produces_no_fallback_warning(
+    synthetic_ui_db: Path,
+    tmp_workdir: Path,
+) -> None:
+    """UT-C-046: an explicit ``--db :memory:`` must not warn about fallback.
+
+    Notes
+    -----
+    Before issue #49 was fixed, the CLI discarded the
+    ``used_memory_fallback`` flag from ``resolve_target_db`` and
+    ``execute_notebook`` recomputed it as ``db == ":memory:"``, so an
+    explicit ``--db :memory:`` still produced the "no target database was
+    resolved" warning. The output HTML footer must not contain that
+    warning when ``--db :memory:`` was passed explicitly.
+
+    Traceability
+    ------------
+    Issue #49
+    """
+    output_path = tmp_workdir / "out.html"
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            ":memory:",
+            "--output",
+            str(output_path),
+            "--no-fail-on-cell-error",
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.OK
+    html = output_path.read_text(encoding="utf-8")
+    assert "no target database was resolved" not in html.lower()
+
+
 def test_ut_c_034_no_fail_on_cell_error_still_fails_on_abandoned_report(
     tmp_path: Path,
 ) -> None:

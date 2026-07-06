@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The executor now logs a `cell_started` event before, and a
+  `cell_finished` event after, every notebook cell at INFO level via
+  `structlog` (to stderr), including the 1-based cell index, total cell
+  count, and, for `cell_finished`, the resulting status and duration in
+  seconds. This gives progress feedback during long-running exports
+  instead of silence until the whole notebook finishes
+  ([#51](https://github.com/b-trout/duckdb-nb-export/issues/51)).
 - `--read-only` to open the target database in DuckDB read-only mode for a
   stronger no-writes guarantee than the default rollback-based safety net.
   Notebook cells that create or modify tables then fail outright instead
@@ -112,6 +119,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   genuine validation failure while the UI is writing to `ui.db`) still
   retry and raise the existing "UI may be running" hint unchanged
   ([#64](https://github.com/b-trout/duckdb-nb-export/issues/64)).
+- Ctrl-C (SIGINT) during a running cell no longer risks a native DuckDB
+  abort (`terminate called without an active exception`, `SIGABRT`) at
+  interpreter teardown. `KeyboardInterrupt` arriving while a cell's worker
+  thread is running is now handled explicitly: the connection is
+  interrupted and, if the worker thread returns within
+  `--interrupt-grace`, the transaction is rolled back and the connection
+  is closed before `KeyboardInterrupt` is re-raised. If the worker thread
+  is still uninterruptible after the grace period, the connection is
+  deliberately left untouched, mirroring the existing uninterruptible-
+  timeout behavior, since DuckDB serializes operations per connection and
+  touching it again could block forever
+  ([#57](https://github.com/b-trout/duckdb-nb-export/issues/57)).
+- An explicit `--db :memory:` no longer emits the "No target database was
+  resolved; executing against `:memory:`." warning. Previously, the CLI
+  discarded the `used_memory_fallback` flag returned by
+  `resolve_target_db`, so `execute_notebook` always recomputed it from
+  `db == ":memory:"` and warned even when `:memory:` was requested
+  explicitly rather than being a fallback
+  ([#49](https://github.com/b-trout/duckdb-nb-export/issues/49)).
 - Stale `ui.db` snapshot directories left behind by a crashed or killed
   process no longer accumulate indefinitely: each snapshot-path call to
   `open_ui_db` now opportunistically removes snapshot directories older

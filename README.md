@@ -80,6 +80,20 @@ definition, re-executes each SQL cell against the target DuckDB database, and
 renders one standalone HTML file. The HTML has inline CSS, supports light and
 dark color schemes, and does not reference external resources.
 
+During execution, the exporter logs a `cell_started` and `cell_finished`
+event (via `structlog`, to stderr) for every cell, including its 1-based
+index, the total cell count, and, for `cell_finished`, the resulting status
+and duration in seconds. This gives visibility into long-running notebooks
+without waiting for the whole export to finish; pipe or `grep` stderr to
+follow progress.
+
+If Ctrl-C (SIGINT) is sent while a cell is executing, the exporter attempts
+to interrupt the running query and, if that succeeds within
+`--interrupt-grace`, rolls back and closes the target database connection
+before exiting. If the query cannot be interrupted in time, the connection
+is intentionally left untouched (mirroring the uninterruptible-timeout
+behavior) rather than risking a hang or a corrupt state.
+
 ### Safety model
 
 Exporting a notebook executes its SQL with your privileges. Do not export
@@ -127,7 +141,9 @@ over inline credentials in `ATTACH` strings or other SQL wherever possible.
 
 If no target database is resolved, execution falls back to `:memory:` and emits
 a warning. DuckDB UI notebook JSON stores database names, not reliable file
-paths, so pass `--db <path>` for exports that depend on existing tables.
+paths, so pass `--db <path>` for exports that depend on existing tables. This
+fallback warning is only emitted when `:memory:` was chosen automatically;
+passing `--db :memory:` explicitly does not trigger it.
 
 `--db <path>` must point to an existing DuckDB database file (or `:memory:`,
 or a URI-style connect string such as `md:...`); a nonexistent local path is
