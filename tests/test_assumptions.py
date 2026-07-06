@@ -17,8 +17,9 @@ None
 
 Notes
 -----
-AT-011 is reserved by the test design document and is intentionally not
-implemented here.
+AT-011 (interrupt-induced transaction abort) was implemented on 2026-07-05
+after the design doc 6.2#9 investigation completed; no AT IDs remain
+reserved.
 """
 
 from __future__ import annotations
@@ -512,6 +513,55 @@ def test_at_008_transaction_control_statement_support_inside_transaction(
             con.execute("BEGIN")
         con.execute("ROLLBACK")
     finally:
+        con.close()
+
+
+def test_at_011_interrupt_inside_transaction_aborts_and_rollback_recovers() -> None:
+    """AT-011: interrupt mid-query inside a transaction aborts the transaction.
+
+    Parameters
+    ----------
+    None
+        This test does not accept parameters.
+
+    Returns
+    -------
+    None
+        The test passes when an interrupted query inside an explicit
+        transaction leaves that transaction aborted (a probe statement raises
+        ``TransactionException``), and ``ROLLBACK`` restores the connection.
+
+    Raises
+    ------
+    AssertionError
+        Raised if interrupt-induced transaction abort semantics change.
+
+    Notes
+    -----
+    The executor depends on this: after a timeout interrupt it probes with
+    ``SELECT 1`` and, when the probe reports an aborted transaction, restarts
+    the transaction with ``ROLLBACK`` + ``BEGIN`` before continuing (design
+    doc 4.2, ADR-007). AT-007 covers the autocommit case, where the same
+    connection stays usable without a ``ROLLBACK``.
+    """
+    con = duckdb.connect()
+    timer = threading.Timer(0.1, con.interrupt)
+    try:
+        con.execute("BEGIN")
+        timer.start()
+        with pytest.raises(duckdb.InterruptException):
+            con.execute(
+                "SELECT count(*) FROM range(10000000000) a, range(100) b"
+            ).fetchall()
+
+        with pytest.raises(duckdb.TransactionException):
+            con.execute("SELECT 1")
+
+        con.execute("ROLLBACK")
+        selected = con.execute("SELECT 1").fetchone()
+        assert selected == (1,)
+    finally:
+        timer.cancel()
         con.close()
 
 
