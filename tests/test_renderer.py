@@ -358,7 +358,8 @@ def test_ut_rd_015_chart_cells_render_table_with_english_note() -> None:
 
     assert "a" in html
     assert "10" in html
-    assert "Chart rendering is not supported in Phase 1" in html
+    assert "Chart rendering is not supported" in html
+    assert "does not persist chart configuration" in html
     assert "shown as a table" in html
 
 
