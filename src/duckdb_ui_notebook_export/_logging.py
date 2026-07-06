@@ -85,7 +85,11 @@ def configure_logging(level: int | str = logging.INFO, *, force: bool = False) -
     first configuration and avoid adding duplicate stderr handlers. Pass
     ``force=True`` (as the CLI entry point does once it has parsed
     ``-q``/``-v``) to let a later, more specific call win over an earlier
-    default call.
+    default call. Loggers are deliberately not cached on first use
+    (``cache_logger_on_first_use=False``): a cached logger would keep the
+    level and processors it was first used with, so a later forced
+    reconfiguration (or ``structlog.testing.capture_logs``) would not
+    affect module-level loggers that already emitted an event.
     """
 
     global _CONFIGURED
@@ -113,7 +117,7 @@ def configure_logging(level: int | str = logging.INFO, *, force: bool = False) -
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
     _CONFIGURED = True
 
