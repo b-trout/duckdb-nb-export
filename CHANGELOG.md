@@ -63,6 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code 4 as a `ui.db` access failure even though the cause was unrelated to
   `ui.db`
   ([#34](https://github.com/b-trout/duckdb-nb-export/issues/34)).
+- Documented that `CREATE SECRET` masking does not cover every way a
+  credential can leak into the exported HTML: connection strings embedded
+  in other SQL forms (for example `ATTACH 'postgres://user:password@host/db'
+  AS pg;`) are exported verbatim, and query results that expose secret
+  values (for example `SELECT * FROM duckdb_secrets();`) are rendered as
+  ordinary table cells with no masking. Recommend reviewing exported HTML
+  before sharing it and preferring `CREATE SECRET` over inline credentials
+  ([#39](https://github.com/b-trout/duckdb-nb-export/issues/39)).
 - Documented that chart cells cannot be detected in stored notebook data
   at all: stored notebook format v3 does not record whether a cell was
   displayed as a chart in DuckDB UI, so exported HTML always shows such

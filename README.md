@@ -114,6 +114,17 @@ such as CSV or Parquet scans.
 `CREATE SECRET` parameter values are masked as `***` in rendered SQL. Secrets
 written in any other SQL form are not detected and will remain in the HTML.
 
+Masking only covers `CREATE SECRET` statement text; it does not cover every
+way a credential can end up in the exported HTML. Credentials embedded in
+other SQL forms are exported verbatim: for example, an
+`ATTACH 'postgres://user:password@host/db' AS pg;` cell renders its full
+connection string, password included, in the rendered SQL. Query *results*
+are never masked either: a cell such as `SELECT * FROM duckdb_secrets();`
+renders secret values as ordinary table cells, exposing them just like any
+other query output. Review the generated HTML before sharing it, and prefer
+DuckDB's Secrets Manager (`CREATE SECRET`, whose parameter values are masked)
+over inline credentials in `ATTACH` strings or other SQL wherever possible.
+
 If no target database is resolved, execution falls back to `:memory:` and emits
 a warning. DuckDB UI notebook JSON stores database names, not reliable file
 paths, so pass `--db <path>` for exports that depend on existing tables.
