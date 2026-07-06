@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Execution-phase failures (notebook re-execution or HTML writing) now exit
+  with a dedicated exit code 6 instead of exit code 4. Exit code 4 is now
+  reserved strictly for `ui.db` access failures (lock, corruption, or
+  storage-version mismatch); a missing or unusable `--db` target, or a
+  failure while writing the output HTML, previously returned the same exit
+  code 4 as a `ui.db` access failure even though the cause was unrelated to
+  `ui.db`
+  ([#34](https://github.com/b-trout/duckdb-nb-export/issues/34)).
 - Documented that chart cells cannot be detected in stored notebook data
   at all: stored notebook format v3 does not record whether a cell was
   displayed as a chart in DuckDB UI, so exported HTML always shows such
@@ -54,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#28](https://github.com/b-trout/duckdb-nb-export/issues/28)).
 - A mistyped `--db` path no longer silently creates a new, empty DuckDB
   database file. `execute_notebook` now rejects a plain local `--db` path
-  that does not already exist with a clear error (exit code 4) before
+  that does not already exist with a clear error (exit code 6) before
   connecting, instead of producing an error-filled HTML export with exit
   code 0. `:memory:` and URI-style connect strings (for example `md:...`,
   `s3://...`) are unaffected

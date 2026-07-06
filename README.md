@@ -120,7 +120,7 @@ paths, so pass `--db <path>` for exports that depend on existing tables.
 
 `--db <path>` must point to an existing DuckDB database file (or `:memory:`,
 or a URI-style connect string such as `md:...`); a nonexistent local path is
-rejected with exit code 4 instead of silently creating an empty database
+rejected with exit code 6 instead of silently creating an empty database
 file, which usually means the path was mistyped.
 
 ### CLI reference
@@ -168,8 +168,9 @@ duckdb-nb-export "My Notebook" --output-dir /tmp -o /tmp/report.html
 | 1 | Notebook not found, or notebook name is ambiguous (use `--notebook-id`). |
 | 2 | Cell execution stopped because `--stop-on-error` was set, or a timeout interrupt failed and the export ended partially. |
 | 3 | Output path rejected because it escapes the allowed base directory. |
-| 4 | `ui.db` access or export setup failed, including lock, corruption, or storage-version mismatch. |
+| 4 | `ui.db` access failed, including lock, corruption, or storage-version mismatch. |
 | 5 | Execution confirmation was declined, including non-interactive execution without `--yes`. |
+| 6 | Notebook execution or HTML writing failed, including a missing or unusable `--db` target. |
 
 Without `--stop-on-error`, a run that completes exits 0 even if individual
 cells failed; per-cell failures are reported in the rendered HTML and on

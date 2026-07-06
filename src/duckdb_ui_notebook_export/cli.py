@@ -554,13 +554,13 @@ def main(argv: list[str] | None = None) -> int:
         return int(ExitCode.OUTPUT_PATH_REJECTED)
     except TargetDatabaseError as error:
         LOGGER.error("target_database_missing", error=str(error))
-        return int(ExitCode.UI_DB_ACCESS_FAILED)
+        return int(ExitCode.EXECUTION_FAILED)
     except ExporterError as error:
-        LOGGER.error("export_failed", error=str(error))
-        return int(ExitCode.UI_DB_ACCESS_FAILED)
+        LOGGER.error("execution_failed", error=str(error))
+        return int(ExitCode.EXECUTION_FAILED)
     except (duckdb.Error, OSError) as error:
-        LOGGER.error("export_failed", error=str(error))
-        return int(ExitCode.UI_DB_ACCESS_FAILED)
+        LOGGER.error("execution_failed", error=str(error))
+        return int(ExitCode.EXECUTION_FAILED)
 
 
 if __name__ == "__main__":

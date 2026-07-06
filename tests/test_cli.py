@@ -352,21 +352,21 @@ def test_ut_c_016_main_returns_cell_error_and_partial_html_on_hard_timeout(
     assert output.exists()
 
 
-def test_ut_c_028_main_returns_ui_db_access_failed_for_missing_target_db(
+def test_ut_c_028_main_returns_execution_failed_for_missing_target_db(
     synthetic_ui_db: Path,
     tmp_workdir: Path,
 ) -> None:
-    """UT-C-028: A mistyped ``--db`` maps to exit code 4, no file created.
+    """UT-C-028: A mistyped ``--db`` maps to exit code 6, no file created.
 
     Notes
     -----
-    A dedicated exit code is deferred to a later issue; for now this maps
-    to ``ExitCode.UI_DB_ACCESS_FAILED`` with a ``target_database_missing``
-    log event.
+    ``TargetDatabaseError`` maps to ``ExitCode.EXECUTION_FAILED`` with a
+    ``target_database_missing`` log event, distinct from ui.db access
+    failures.
 
     Traceability
     ------------
-    Issue #30
+    Issue #30, #34
     """
     missing_db = tmp_workdir / "typo.duckdb"
 
@@ -383,8 +383,44 @@ def test_ut_c_028_main_returns_ui_db_access_failed_for_missing_target_db(
         ]
     )
 
-    assert exit_code == ExitCode.UI_DB_ACCESS_FAILED
+    assert exit_code == ExitCode.EXECUTION_FAILED
     assert not missing_db.exists()
+
+
+def test_ut_c_032_main_returns_execution_failed_when_html_writing_fails(
+    synthetic_ui_db: Path,
+    fresh_duckdb: Path,
+    tmp_workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-C-032: An HTML write failure maps to exit code 6, not 4.
+
+    Traceability
+    ------------
+    Issue #34
+    """
+    import duckdb_ui_notebook_export.cli as cli_module
+
+    def _raise_os_error(path: Path, html: str) -> None:
+        del path, html
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli_module, "_write_html", _raise_os_error)
+
+    exit_code = main(
+        [
+            "Notebook",
+            "--ui-db",
+            str(synthetic_ui_db),
+            "--db",
+            str(fresh_duckdb),
+            "--output",
+            str(tmp_workdir / "out.html"),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == ExitCode.EXECUTION_FAILED
 
 
 def test_ut_c_029_read_only_and_allow_writes_are_mutually_exclusive(
