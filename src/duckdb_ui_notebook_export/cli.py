@@ -383,15 +383,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "-o",
         "--output",
-        help="Output HTML path.",
+        help="Output HTML path. Defaults to '<notebook-name>.html' under the "
+        "allowed base directory.",
     )
     parser.add_argument(
         "--output-dir",
-        help="Allowed base directory and default output directory.",
+        help="Allowed base directory and default output directory. Defaults "
+        "to the current directory.",
     )
     parser.add_argument(
         "--db",
-        help="Target DuckDB database path for notebook re-execution.",
+        help="Target DuckDB database path for notebook re-execution. "
+        "Defaults to a path resolved from notebook metadata, then ':memory:'.",
     )
     parser.add_argument(
         "--ui-db",
@@ -423,13 +426,13 @@ def main(argv: list[str] | None = None) -> int:
         "--max-rows",
         type=int,
         default=1000,
-        help="Maximum rows to render per cell.",
+        help="Maximum rows to render per cell (default: %(default)s).",
     )
     parser.add_argument(
         "--cell-timeout",
         type=float,
         default=300.0,
-        help="Per-cell execution timeout in seconds.",
+        help="Per-cell execution timeout in seconds (default: %(default)s).",
     )
     parser.add_argument(
         "--stop-on-error",
@@ -522,7 +525,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if not confirm_execution(notebook.cells, assume_yes=args.yes):
-            LOGGER.error("confirmation_required", error="Execution confirm required.")
+            LOGGER.error(
+                "confirmation_required",
+                error="Execution confirmation required; pass --yes to run "
+                "non-interactively.",
+            )
             return int(ExitCode.CONFIRMATION_DECLINED)
 
         target_db, _used_memory_fallback = resolve_target_db(notebook, args.db)

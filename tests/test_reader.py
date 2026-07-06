@@ -485,6 +485,20 @@ def test_ut_r_013_newer_storage_version_reports_duckdb_upgrade() -> None:
     if not candidates:
         pytest.skip("storage version fixture not present")
 
+    try:
+        duckdb.connect(str(candidates[0]), read_only=True).close()
+    except duckdb.Error:
+        pass
+    else:
+        # Staleness rule from test design doc 2.4: once the environment's
+        # duckdb can open the fixture, the mismatch path is unexercisable
+        # until the fixture is rebuilt with a newer DuckDB.
+        pytest.skip(
+            "storage version fixture is stale (readable by this duckdb); "
+            "regenerate with scripts/regenerate_storage_version_fixture.py "
+            "under a newer duckdb build"
+        )
+
     with pytest.raises(StorageVersionMismatchError) as error_info:
         list_versions(candidates[0], "any-notebook")
 

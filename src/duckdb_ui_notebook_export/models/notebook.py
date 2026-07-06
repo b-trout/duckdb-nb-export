@@ -101,6 +101,9 @@ class Cell(BaseModel):
         Cell kind. SQL is the default Phase 1 cell type.
     sql
         SQL text for the cell.
+    use_database
+        Optional database name this cell selects in DuckDB UI. The executor
+        issues a best-effort ``USE`` before running the cell (ADR-008).
 
     Returns
     -------
@@ -121,6 +124,7 @@ class Cell(BaseModel):
 
     cell_type: str = "sql"
     sql: str
+    use_database: str | None = None
 
 
 class Notebook(BaseModel):
