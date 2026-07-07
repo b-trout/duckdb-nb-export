@@ -11,7 +11,7 @@ Do not open a public GitHub issue for a suspected vulnerability.
 
 ## Response expectations
 
-This is a solo-maintainer, alpha-stage (`0.0.x`) project. There is no
+This is a solo-maintainer, beta-stage (`0.x`) project. There is no
 dedicated security team and no SLA. In good faith, expect a best-effort
 acknowledgement within 14 days. Fix timelines depend on severity and
 maintainer availability; there is no guaranteed turnaround time.
@@ -19,7 +19,7 @@ maintainer availability; there is no guaranteed turnaround time.
 ## Supported versions
 
 Only the latest released version on PyPI receives security fixes. There
-are no backports to older releases while the project is in alpha.
+are no backports to older releases while the project is pre-1.0.
 
 ## Scope
 
