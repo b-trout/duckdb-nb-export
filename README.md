@@ -5,7 +5,7 @@ to a single static HTML file by re-executing notebook cells against a target
 database. It fills the current gap where DuckDB UI notebooks do not have a
 Jupyter `nbconvert` equivalent.
 
-Status: alpha, Phase 1, CLI only. Published on PyPI as
+Status: beta, Phase 1, CLI only. Published on PyPI as
 [`duckdb-nb-export`](https://pypi.org/project/duckdb-nb-export/). It depends
 on DuckDB UI's unofficial internal `ui.db` schema, so a DuckDB UI update can
 break notebook discovery or parsing. This is an unofficial third-party tool,
